@@ -1,35 +1,56 @@
 from __future__ import division
 
-import numpy as np
-import meshpy.triangle as mptriangle
+import copy
+import logging
 
-from openglider.mesh.meshpy_triangle import custom_triangulation
+import numpy as np
+import openglider.vector as vector
+USE_POLY_TRI = False
+logger = logging.getLogger(__name__)
 
 
 class Vertex(object):
     dmin = 10**-10
 
-    def __init__(self, x, y, z):
-        self.x = x
-        self.y = y
-        self.z = z
+    def __init__(self, x, y, z, attributes=None):
+        self.set_values(x, y, z)
+        self.attributes = attributes or {}
+        self.index = -1
 
     def __iter__(self):
         yield self.x
         yield self.y
         yield self.z
 
+    def __json__(self):
+        data = list(self)
+        if self.attributes:
+            data.append(self.attributes)
+
+        return data
+
+    def set_values(self, x, y, z):
+        self.x = x
+        self.y = y
+        self.z = z
+
     def __len__(self):
         return 3
 
     def copy(self):
-        return self.__class__(*self)
+        new = self.__class__(*self)
+        new.attributes = self.attributes.copy()
+        return new
 
     def is_equal(self, other):
         for x1, x2 in zip(self, other):
             if abs(x1 - x2) > self.dmin:
                 return False
         return True
+
+    def is_in_range(self, minimum, maximum):
+        return (self.x >= minimum[0] and self.y >= minimum[1] and self.z >= minimum[2] and
+                self.x <= maximum[0] and self.y <= maximum[1] and self.z <= maximum[2])
 
     def round(self, places):
         self.x = round(self.x, places)
@@ -44,10 +65,65 @@ class Vertex(object):
         return [cls(*v) for v in vertices]
 
 
-class Polygon(list):
+class Polygon(object):
     """the polygon is a simple list, but using a Polygon-object instead of \
        a list let you monkey-patch the object"""
-    pass
+    def __init__(self, nodes, attributes=None):
+        self.nodes = nodes
+        self.attributes = attributes or {}
+
+    def __json__(self):
+        data = {
+            "nodes": self.nodes
+        }
+        if self.attributes:
+            data["attributes"] = self.attributes
+
+        return data
+
+    def __iter__(self):
+        return self.nodes.__iter__()
+
+    def __setitem__(self, key, value):
+        return self.nodes.__setitem__(key, value)
+
+    def __getitem__(self, item):
+        return self.nodes.__getitem__(item)
+
+    def copy(self):
+        return self.__class__(self.nodes[:], self.attributes)
+
+    def __len__(self):
+        return len(self.nodes)
+
+    def __add__(self, other):
+        assert isinstance(other, Polygon)
+        self.nodes += other.nodes
+
+    @property
+    def center(self):
+        center = np.array([0, 0, 0], dtype=float)
+        for vert in self.nodes:
+            center += np.array(list(vert))
+        return center / len(self.nodes)
+
+    @property
+    def normal(self):
+        points = np.array([list(v) for v in self.nodes])
+        if len(self) == 2:
+            n = points[1] - points[0]
+        elif len(self) == 3:
+            n = np.cross(points[1] -points[0],
+                         points[0] -points[2])
+        elif len(self) == 4:
+            n = np.cross(points[2] -points[0],
+                         points[3] -points[1])
+        return n / np.linalg.norm(n)
+
+
+    def get_node_average(self, attribute):
+        attribute_list = [n.attributes[attribute] for n in self.nodes]
+        return sum(attribute_list)/len(attribute_list)
 
 
 class Mesh(object):
@@ -68,6 +144,10 @@ class Mesh(object):
             polygons = {}
         self.polygons = polygons
         assert all(isinstance(vertex, Vertex) for vertex in self.vertices)
+        for poly_group in polygons:
+            for poly in polygons[poly_group]:
+                if not isinstance(poly, Polygon):
+                    raise Exception("Not a polygon: {} ({})".format(poly, poly_group))
         # all nodes that might be in touch with other meshes
         self.boundary_nodes = boundary_nodes or {}
         self.name = name or "unnamed"
@@ -78,37 +158,98 @@ class Mesh(object):
         vertices = set()
         for poly in self.all_polygons:
             for node in poly:
+                if not isinstance(node, Vertex):
+                    raise Exception("Not a Vertex: {} ({})".format(node, poly))
                 vertices.add(node)
 
         return vertices
 
     @property
+    def bounding_box(self):
+        vertices = np.array(self.vertices)
+        upper = np.max(vertices, 0)
+        lower = np.min(vertices, 0)
+        return lower, upper
+
+    def create_subspaces(self, num_subspaces=None):
+        dmin = 10**-10
+        lower, upper = self.bounding_box
+        num_subspaces = num_subspaces or 5
+        space = np.linspcae(lower, upper, num_subspaces)
+        x0, y0, z0 = space[0]
+        subspaces = []
+        for i, x1 in enumerate(space.T[0,1:]):
+            for j, y1 in enumerate(space.T[1,1:]):
+                for k, z1 in enumerate(space.T[2,1:]):
+                    s = [[x0 - dmin, y0 - dmin, z0 - dmin],
+                         [x1 + dmin, y0 + dmin, z0 + dmin]]
+                    subspaces.append(s)
+        return subspaces
+
+    @property
     def all_polygons(self):
         return sum(self.polygons.values(), [])
+
+    def copy(self):
+        return copy.deepcopy(self)
+
+    def mirror(self, axis="x"):
+        for vertex in self.vertices:
+            setattr(vertex, axis, -getattr(vertex, axis))
+
+        for name, group in self.polygons.items():
+            for polygon in group:
+                polygon.nodes = polygon.nodes[::-1]
+
+        return self
+
 
     def get_indexed(self):
         """
         Get [vertices, polygons, boundaries] with references by index
         """
         vertices = list(self.vertices)
-        indices = {node: i for i, node in enumerate(vertices)}
+        for i, v in enumerate(vertices):
+            v.index = i
+            
         polys = {}
         for poly_name, polygons in self.polygons.items():
-            polys[poly_name] = [[indices[node] for node in poly] for poly in polygons]
+            poly_group = []
+            for poly in polygons:
+                poly_indices = [node.index for node in poly]
+                new_poly = Polygon(poly_indices, attributes=poly.attributes)
+                poly_group.append(new_poly)
+
+            polys[poly_name] = poly_group
+
         boundaries = {}
         for boundary_name, boundary_nodes in self.boundary_nodes.items():
-            boundaries[boundary_name] = [indices[node] for node in boundary_nodes if node in vertices]
+            boundaries[boundary_name] = [node.index for node in boundary_nodes if node in vertices]
 
         return vertices, polys, boundaries
 
     @classmethod
-    def from_indexed(cls, vertices, polygons, boundaries=None, name=None):
+    def from_indexed(cls, vertices, polygons, boundaries=None, name=None, node_attributes=None):
         vertices = [Vertex(*node) for node in vertices]
+
+        if node_attributes is not None:
+            for node, attributes in zip(vertices, node_attributes):
+                node.attributes.update(attributes)
+
         boundaries = boundaries or {}
         boundaries_new = {}
         polys = {}
+
         for poly_name, polygons in polygons.items():
-            polys[poly_name] = [[vertices[i] for i in poly] for poly in polygons]
+            new_poly_group = []
+            for poly in polygons:
+                poly_vertices = [vertices[i] for i in poly]
+                poly_attributes = getattr(poly, "attributes", {})
+                new_poly = Polygon(poly_vertices, attributes=poly_attributes)
+                new_poly_group.append(new_poly)
+
+            polys[poly_name] = new_poly_group
+
         for boundary_name, boundary_indices in boundaries.items():
             boundaries_new[boundary_name] = [vertices[i] for i in boundary_indices]
 
@@ -119,105 +260,10 @@ class Mesh(object):
                                            len(self.all_polygons),
                                            len(self.vertices))
 
-    @classmethod
-    def from_rib(cls, rib, hole_num=10, mesh_option="Qzip", glider=None):
-        """ Y... no additional points on boarder
-            i... algorythm (other algo crash)
-            p... triangulation
-            q... quality
-            a... area constraint
-        """
-        triangle_in = {}
-        vertices = list(rib.getMesh(glider))[:-1]
-        if rib.is_closed():
-            return cls.from_indexed([], {}, {})
-        segments = [[i, i+1] for i, _ in enumerate(vertices)]
-        segments[-1][-1] = 0
-        triangle_in["vertices"] = vertices
-        triangle_in["segments"] = segments
-
-        # adding the vertices and segments of the holes
-        # to get TRIANGLE know where to remove triangles
-        # a list of points which lay inside the holes
-        # must be passed
-        if len(rib.holes) > 0 and hole_num > 3:
-            triangle_in["holes"] = []
-            for nr, hole in enumerate(rib.holes):
-                start_index = len(triangle_in["vertices"])
-                hole_vertices = hole.get_flattened(rib, num=hole_num, scale=False)
-                segments = [[i + start_index, i + start_index + 1] for i, _ in enumerate(hole_vertices)]
-                segments[-1][-1] = start_index
-                triangle_in["vertices"] += hole_vertices
-                triangle_in["segments"] += segments
-                triangle_in["holes"].append(hole.get_center(rib, scale=False).tolist())
-
-        # _triangle_output = triangle.triangulate(triangle_in, "pziq")
-        mesh_info = mptriangle.MeshInfo()
-        mesh_info.set_points(triangle_in["vertices"])
-        mesh_info.set_facets(triangle_in["segments"])
-        if "holes" in triangle_in:
-            mesh_info.set_holes(triangle_in["holes"])
-        mesh = custom_triangulation(mesh_info, mesh_option)  # see triangle options
-        try:
-            triangles = list(mesh.elements)
-            vertices = rib.align_all(mesh.points)
-        except KeyError:
-            print("there was a keyerror")
-            return cls()
-        return cls.from_indexed(vertices, polygons={"ribs": triangles} , boundaries={rib.name:range(len(vertices))})
-
-    @classmethod
-    def from_diagonal(cls, diagonal, cell, insert_points=4):
-        """
-        get a mesh from a diagonal (2 poly lines)
-        """
-        left, right = diagonal.get_3d(cell)
-        if insert_points:
-            point_array = []
-            number_array = []
-            # create array of points
-            # the outermost points build the segments
-            n_l = len(left)
-            n_r = len(right)
-            count = 0
-            for y_pos in np.linspace(0., 1., insert_points + 2):
-                # from left to right, from rib1 to rib2
-                point_line = []
-                number_line = []
-                num_points = int(n_l * (1. - y_pos) + n_r * y_pos)
-                for x_pos in np.linspace(0., 1., num_points): # adding point to line
-                    point_line.append(left[x_pos * (n_l - 1)] * (1. - y_pos) +
-                                      right[x_pos * (n_r - 1)] * y_pos)
-                    number_line.append(count)
-                    count += 1
-                point_array.append(point_line)
-                number_array.append(number_line)
-            edge = number_array[0]
-            edge += [line[-1] for line in number_array[1:]]
-            edge += number_array[-1][-2::-1] # last line reversed without the last element
-            edge += [line[0] for line in number_array[1:-1]][::-1]
-            segment = [[edge[i], edge[i +1]] for i in range(len(edge) - 1)]
-            segment.append([edge[-1], edge[0]])
-            point_array = np.array([point for line in point_array for point in line]) #flatten
-            points2d = map_to_2d(point_array)
-
-            mesh_info = mptriangle.MeshInfo()
-            mesh_info.set_points(points2d)
-            mesh = custom_triangulation(mesh_info, "Qz")
-            return cls.from_indexed(point_array, 
-                                    {"diagonals": list(mesh.elements)}, 
-                                    {cell.rib1.name: number_array[0], 
-                                     cell.rib2.name: number_array[-1]})
-
-        else:
-            vertices = np.array(list(left) + list(right)[::-1])
-            polygon = [range(len(vertices))]
-            return cls.from_indexed(vertices, {"diagonals": polygon})
-
-    def copy(self):
-        poly_copy = {key: [p[:] for p in polygons]
-                     for key, polygons in self.polygons.items()}
-        return self.__class__(poly_copy, self.boundary_nodes)
+    # def copy(self):
+    #     poly_copy = {key: [p.copy() for p in polygons]
+    #                  for key, polygons in self.polygons.items()}
+    #     return self.__class__(poly_copy, self.boundary_nodes)
 
     def triangularize(self):
         """
@@ -239,7 +285,8 @@ class Mesh(object):
 
     def __json__(self):
         vertices, polygons, boundaries = self.get_indexed()
-        vertices_new = [list(v) for v in vertices]
+        vertices_new = [v.__json__() for v in vertices]
+
         return {
             "vertices": vertices_new,
             "polygons": polygons,
@@ -248,10 +295,6 @@ class Mesh(object):
         }
 
     __from_json__ = from_indexed
-
-    #@classmethod
-    #def __from_json__(cls, vertices, polygons, boundaries, name):
-    #    return cls.from_indexed(vertices, polygons, boundaries, name)
 
     def export_obj(self, path=None, offset=0):
         vertices, polygons, boundaries = self.get_indexed()
@@ -276,11 +319,12 @@ class Mesh(object):
         if path:
             with open(path, "w") as outfile:
                 outfile.write(out)
-
-        return out
+            return path
+        else:
+            return out
 
     @staticmethod
-    def parse_colour_code(string):
+    def parse_color_code(string):
         import re
         rex = re.compile(r".*#([0-9a-zA-Z]{6})")
         color = [255, 255, 255]
@@ -293,17 +337,17 @@ class Mesh(object):
 
         return color
 
-    def export_dxf(self, path=None):
+    def export_dxf(self, path=None, version="AC1021"):
         import ezdxf
         import openglider.mesh.dxf_colours as dxfcolours
-        dwg = ezdxf.new(dxfversion="AC1015")
+        dwg = ezdxf.new(dxfversion=version)
         ms = dwg.modelspace()
         for poly_group_name, poly_group in list(self.polygons.items()):
-            color = dxfcolours.get_dxf_colour_code(*self.parse_colour_code(poly_group_name))
+            color = dxfcolours.get_dxf_colour_code(*self.parse_color_code(poly_group_name))
             name = poly_group_name.replace("#", "_")
             dwg.layers.new(name=name, dxfattribs={"color": color})
 
-            polys_new = list(filter(lambda poly: len(poly)>2, poly_group))
+            polys_new = list(filter(lambda poly: len(poly) > 2, poly_group))
             if polys_new:
                 mesh = Mesh({"123": polys_new})
 
@@ -311,10 +355,12 @@ class Mesh(object):
                 mesh_dxf = ms.add_mesh({"layer": name})
 
                 with mesh_dxf.edit_data() as mesh_data:
+                    num_polys = len(polys["123"])
+                    logger.info(f"Exporting {num_polys} faces")
                     mesh_data.vertices = [list(p) for p in vertices]
                     mesh_data.faces = polys["123"]
 
-            lines = list(filter(lambda x: len(x)==2, poly_group))
+            lines = list(filter(lambda x: len(x) == 2, poly_group))
             if lines:
                 for line in lines:
                     ms.add_polyline3d([list(p) for p in line], {"layer": name})
@@ -330,7 +376,7 @@ class Mesh(object):
         panels_lines = []
 
         for i, polygon_group_name in enumerate(polygons):
-            color = self.parse_colour_code(polygon_group_name)
+            color = self.parse_color_code(polygon_group_name)
 
             color_str = " {} {} {} 1".format(*color)
 
@@ -381,10 +427,10 @@ class Mesh(object):
                 outfile.write(material_line + "\n")
 
             for panel_line in panels_lines:
-                #print(panel_line)
                 outfile.write(panel_line + "\n")
 
     def export_collada(self):
+        # not yet working
         import collada
         mesh = collada.Collada()
 
@@ -394,7 +440,7 @@ class Mesh(object):
         mesh.materials.append(mat)
         #mesh.
 
-        vert_src = collada.source.FloatSource("cubeverts-array", numpy.array(vert_floats), ('X', 'Y', 'Z'))
+        # vert_src = collada.source.FloatSource("cubeverts-array", np.array(vert_floats), ('X', 'Y', 'Z'))
 
     def round(self, places):
         for vertice in self.vertices:
@@ -416,9 +462,38 @@ class Mesh(object):
         msh += other
         return msh
 
+    def __getitem__(self, item):
+        polys = self.polygons[item]
+        new_mesh = Mesh(polygons={item: polys})
+        vertices = new_mesh.vertices
+        boundaries = {}
+
+        for boundary_name, boundary_nodes in self.boundary_nodes.items():
+            new_vertices = []
+            for node in boundary_nodes:
+                if node in vertices:
+                    new_vertices.append(node)
+
+            if new_vertices:
+                boundaries[boundary_name] = new_vertices
+
+        new_mesh.boundary_nodes = boundaries
+
+        return new_mesh
+
 
     # def __iadd__(self, other):
     #     self = self + other
+    @staticmethod
+    def _find_duplicates(nodes):
+        duplicates = {}
+        for i, node1 in enumerate(nodes[:-1]):
+            if node1 not in duplicates:
+                for j, node2 in enumerate(nodes[i:]):
+                    if node1 is not node2 and node1.is_equal(node2):
+                        duplicates[node2] = node1
+        
+        return duplicates
 
     def delete_duplicates(self, boundaries=None):
         """
@@ -430,11 +505,10 @@ class Mesh(object):
         replace_dict = {}
         all_boundary_nodes = sum([self.boundary_nodes[name] for name in boundaries], [])
 
-        for i, node1 in enumerate(all_boundary_nodes[:-1]):
-            if node1 not in replace_dict:
-                for j, node2 in enumerate(all_boundary_nodes[i:]):
-                    if node1 is not node2 and node1.is_equal(node2):
-                        replace_dict[node2] = node1
+        replace_dict = self._find_duplicates(all_boundary_nodes)
+
+        for node, replacement in replace_dict.items():
+            replacement.attributes.update(node.attributes)
 
         for boundary_name, boundary_nodes in self.boundary_nodes.items():
             to_remove = []
@@ -444,8 +518,9 @@ class Mesh(object):
             for i in to_remove[::-1]:
                 boundary_nodes.pop(i)
 
-            print("deleted {} duplicated Vertices for boundary group <{}> ".format(
-                len(to_remove), boundary_name))
+            if to_remove:
+                count = len(to_remove)
+                logger.info(f"deleted {count} duplicated Vertices for boundary group <{boundary_name}> ")
 
         for polygon in self.all_polygons:
             for i, node in enumerate(polygon):
@@ -457,16 +532,47 @@ class Mesh(object):
         for group_name, poly_group in self.polygons.items():
             for i, polygon in enumerate(poly_group):
                 poly_set = set(polygon)
-                new_polygon = [node for node in polygon if node in poly_set]
+                new_polygon = Polygon([node for node in polygon if node in poly_set])
+                new_polygon.attributes = polygon.attributes
                 self.polygons[group_name][i] = new_polygon
 
         vertices = self.vertices
         for boundary_name in boundaries:
             for i, node in enumerate(self.boundary_nodes[boundary_name]):
                 if node not in vertices:
-                    print("no")
-                    print(node in replace_dict)
+                    logger.warning(f"uiuiui, {node} in replace dict is not in vertices")
         return self
+
+    def polygon_size(self):
+        size_min = float("inf")
+        size_max = float("-inf")
+        count = 0
+        sum = 0
+
+        for poly in self.all_polygons:
+            if len(poly) in (3, 4):
+                sides = []
+                for i in range(len(poly)):
+                    i_plus = i+1
+                    if i_plus == len(poly):
+                        i_plus = 0
+                    side = np.array(list(poly[i])) - np.array(list(poly[i_plus]))
+                    sides.append(side)
+
+                if len(poly) == 3:
+                    size_poly = 0.5 * vector.norm(np.cross(sides[0], sides[1]))
+                elif len(poly) == 4:
+                    size_poly = 0.5 * (vector.norm(np.cross(sides[0], sides[1])) + vector.norm(np.cross(sides[2], sides[3])))
+                else:
+                    size_poly = 0
+
+                sum += size_poly
+                count += 1
+
+                size_min = min(size_min, size_poly)
+                size_max = max(size_max, size_poly)
+
+        return size_min, size_max, sum/count
 
 
 def apply_z(vertices):
@@ -495,7 +601,6 @@ if __name__ == "__main__":
     p3 = Vertex(*[0, 1, 0])
     p4 = Vertex(*[1, 1, 0])
     p5 = Vertex(*[0, 0, 0])
-    print(p1)
 
     a = Polygon([p1,p2,p3,p4])
     b = Polygon([p1,p2,p4,p5])
@@ -505,5 +610,3 @@ if __name__ == "__main__":
 
     m1 += m2
     m1.delete_duplicates()
-    print(m1.polygons)
-

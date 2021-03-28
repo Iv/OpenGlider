@@ -1,6 +1,6 @@
 import functools
 
-import numpy
+import numpy as np
 
 from openglider.plots import marks
 from openglider.plots.marks import Inside, OnLine
@@ -17,13 +17,14 @@ class LaserConfig(Config):
     allowance_trailing_edge = 0.01
     allowance_entry_open = 0.015
 
+
 sewing_config = {
     "marks": {
         "diagonal": Inside(marks.Triangle()),
         "diagonal_front": Inside(marks.Arrow(left=True)),
         "diagonal_back": Inside(marks.Arrow(left=False)),
         "strap": Inside(marks.Line()),
-        "attachment-point": OnLine(marks.Cross(rotation=numpy.pi / 4)),
+        "attachment-point": OnLine(marks.Cross(rotation=np.pi / 4)),
         "panel-cut": marks.Line()
     },
     "allowance": {
@@ -37,28 +38,38 @@ sewing_config = {
         "entry_open": 0.015
     },
     "scale": 1000,
-    "layers":
-        {"cuts": {
+    "layers": {
+        "cuts": {
             "id": 'outer',
             "stroke-width": "0.1",
             "stroke": "red",
             "fill": "none"},
-         "marks": {
-             "id": 'marks',
-             "stroke-width": "0.1",
-             "stroke": "green",
-             "fill": "none"},
-         "text": {
-             "id": 'text',
-             "stroke-width": "0.1",
-             "stroke": "green",
-             "fill": "none"},
-         "stitches": {
-             "id": "stitches",
-             "stroke-width": "0.1",
-             "stroke": "black",
-             "fill": "none"}
-         }
-
+        "marks": {
+            "id": 'marks',
+            "stroke-width": "0.1",
+            "stroke": "green",
+            "fill": "none"},
+        "debug": {
+            "id": 'marks',
+            "stroke-width": "0.1",
+            "stroke": "grey",
+            "fill": "none"},
+        "inner": {
+            "id": "inner",
+            "stroke-width": "0.1",
+            "stroke": "green",
+            "fill": "none"
+        },
+        "text": {
+            "id": 'text',
+            "stroke-width": "0.1",
+            "stroke": "green",
+            "fill": "none"},
+        "stitches": {
+            "id": "stitches",
+            "stroke-width": "0.1",
+            "stroke": "black",
+            "fill": "none"}
+    }
 
 }

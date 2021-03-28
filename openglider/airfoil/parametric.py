@@ -1,8 +1,8 @@
-import numpy
+import numpy as np
 
 from openglider.airfoil import Profile2D
 from openglider.vector.spline import Bezier
-from openglider.vector.spline.bspline import BSpline
+from openglider.vector.spline.bspline import BSpline, BSpline3
 from openglider.vector import norm, Interpolation
 
 
@@ -10,14 +10,15 @@ class BezierProfile2D(Profile2D):
     # TODO make new fit bezier method to set the second x value of the
     # controllpoints to zero.
     def __init__(self, data=None, name=None,
-                 upper_spline=None, lower_spline=None):
+                 upper_spline=None, lower_spline=None,
+                 control_num_lower=8, control_num_upper=8):
         super(BezierProfile2D, self).__init__(data=data, name=name)
         self.close()
         self.normalize()
         self.upper_spline = None
         self.lower_spline = None
-        self.upper_spline = upper_spline or self.fit_upper()
-        self.lower_spline = lower_spline or self.fit_lower()
+        self.upper_spline = upper_spline or self.fit_upper(control_num=control_num_upper)
+        self.lower_spline = lower_spline or self.fit_lower(control_num=control_num_lower)
 
     def __json__(self):
         dct = super(BezierProfile2D, self).__json__()
@@ -57,7 +58,7 @@ class BezierProfile2D(Profile2D):
             return BSpline.constraint_fit(lower_smooth, constraints)
 
     def fit_region(self, start, stop, num_points, control_points):
-        smoothened = [self[self(x)] for x in numpy.linspace(start, stop, num=num_points)]
+        smoothened = [self[self(x)] for x in np.linspace(start, stop, num=num_points)]
         return Bezier.fit(smoothened, numpoints=num_points)
 
     def fit_profile(self, num_points, control_points):
@@ -68,10 +69,10 @@ class BezierProfile2D(Profile2D):
     def apply_splines(self, num=70):
         upper = self.upper_spline.get_sequence(num)
         lower = self.lower_spline.get_sequence(num)
-        self.data = numpy.array(upper.tolist() + lower[1:].tolist())
+        self.data = np.array(upper.tolist() + lower[1:].tolist())
 
     def make_smooth_dist(self, points, num=70, dist=None, upper=True):
-        # make array [[lenght, x, y], ...]
+        # make array [[length, x, y], ...]
         if not dist:
             return points
         length = [0]
@@ -85,12 +86,12 @@ class BezierProfile2D(Profile2D):
             return [x, interpolation_y(x)]
 
         if dist == "const":
-            dist = numpy.linspace(0, length[-1], num)
+            dist = np.linspace(0, length[-1], num)
         elif dist == "sin":
             if upper:
-                dist = [numpy.sin(i) * length[-1] for i in numpy.linspace(0, numpy.pi / 2, num)]
+                dist = [np.sin(i) * length[-1] for i in np.linspace(0, np.pi / 2, num)]
             else:
-                dist = [abs(1 - numpy.sin(i)) * length[-1] for i in numpy.linspace(0, numpy.pi / 2, num)]
+                dist = [abs(1 - np.sin(i)) * length[-1] for i in np.linspace(0, np.pi / 2, num)]
         else:
             return points
         return [get_point(d) for d in dist]

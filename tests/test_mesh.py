@@ -3,7 +3,7 @@ import unittest
 
 from common import *
 
-from openglider.mesh import Mesh, Vertex
+from openglider.mesh import Mesh, Vertex, Polygon
 import openglider
 from openglider.utils.distribution import Distribution
 
@@ -18,14 +18,15 @@ class TestMesh(TestCase):
         p3 = Vertex(*[0, 1, 0])
         p4 = Vertex(*[1, 1, 0])
         p5 = Vertex(*[0, 0, 0])
-        a = [p1, p2, p3, p4]
-        b = [p1, p2, p4, p5]
-        m1 = Mesh({"a": [a]}, boundary_nodes={"j": a})
-        m2 = Mesh({"b": [b]}, boundary_nodes={"j": b})
+        a = Polygon([p1, p2, p3, p4])
+        b = Polygon([p1, p2, p4, p5])
+        m1 = Mesh({"a": [a]}, boundary_nodes={"j": list(a)})
+        m2 = Mesh({"b": [b]}, boundary_nodes={"j": list(b)})
         m3 = m1 + m2
         m3.delete_duplicates()
         for vertex in a:
-            self.assertTrue(vertex in m3.vertices)
+            matches = [vertex.is_equal(p) for p in m3.vertices]
+            self.assertTrue(any(matches))
 
     def test_glider_mesh(self):
         dist = Distribution.from_nose_cos_distribution(30, 0.2)
@@ -36,7 +37,7 @@ class TestMesh(TestCase):
         for cell in self.glider.cells[1:-1]:
             m += cell.get_mesh(0)
         for rib in self.glider.ribs:
-            m += Mesh.from_rib(rib)
+            m += rib.get_mesh()
         m.delete_duplicates()
         m.get_indexed()
 

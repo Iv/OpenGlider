@@ -1,6 +1,6 @@
 from __future__ import division
 
-import numpy
+import numpy as np
 
 from openglider.utils.cache import HashedList
 
@@ -54,14 +54,14 @@ class Distribution(HashedList):
             self.data = list(self.data[:-1]) + [value] + [self.data[-1]]
             return start_ind + 1
 
-        nearest_ind = numpy.abs(self.data[start_ind:] - value).argmin() + 1 + start_ind
-        nose_ind = numpy.abs(self.data[start_ind:]).argmin() + start_ind
+        nearest_ind = np.abs(self.data[start_ind:] - value).argmin() + 1 + start_ind
+        nose_ind = np.abs(self.data[start_ind:]).argmin() + start_ind
 
         if nearest_ind == len(self.data):
             self.data = list(self.data[:-1]) + [value] + [self.data[-1]]
             return nearest_ind
 
-        # addition: tranform only from or to nose
+        # addition: transform only from or to nose
         if value < 0 and to_nose is True:
             end_index = nose_ind
         else:
@@ -104,11 +104,11 @@ class Distribution(HashedList):
             start_ind = self.insert_value(value, start_ind)
 
     @classmethod
-    def from_linear(cls, numpoints, start = -1, stop = 1):
+    def from_linear(cls, numpoints, start=-1, stop=1):
         """
         Get a linear distribution
         """
-        return cls(numpy.linspace(start, stop, numpoints))
+        return cls([start + (stop - start)/numpoints * i for i in range(numpoints)])
 
     @classmethod
     def from_polynom_distribution(cls, numpoints, order=2):
@@ -129,7 +129,7 @@ class Distribution(HashedList):
         low density at (-1) and (+1) but neat around 0
         """
         numpoints -= numpoints % 2  # brauchts?
-        xtemp = lambda x: ((x > 0.5) - (x < 0.5)) * (1 - numpy.sin(numpy.pi * x))
+        xtemp = lambda x: ((x > 0.5) - (x < 0.5)) * (1 - np.sin(np.pi * x))
         return cls([xtemp(i/numpoints) for i in range(numpoints+1)])
 
     @classmethod
@@ -139,8 +139,40 @@ class Distribution(HashedList):
         double-cosinus -> neat distribution at nose and trailing edge
         """
         numpoints -= numpoints % 2
-        xtemp = lambda x: ((x > 0.5) - (x < 0.5)) * (1 + numpy.cos(2 * numpy.pi * x)) / 2
+        xtemp = lambda x: ((x > 0.5) - (x < 0.5)) * (1 + np.cos(2 * np.pi * x)) / 2
         return cls([xtemp(i/numpoints) for i in range(numpoints+1)])
+
+    @classmethod
+    def create_cos_distribution(cls, factor: float):
+        def new_distribution(parent, numpoints, *arg, **kwarg):
+            numpoints -= numpoints % 2
+            
+            xtemp = lambda x: ((x<=0)-(x>0))*(factor*np.cos(x*0.5*np.pi)+(1-factor)*(1-abs(x))-1)
+            data = [xtemp(2*i/numpoints-1) for i in range(numpoints+1)]
+            data[0] = -1
+            data[-1] = 1
+            return cls(data)
+        
+        return new_distribution
+
+    @classmethod
+    def create_cos_distribution_2(cls, factor_front: float, factor_back):
+        def new_distribution(parent, numpoints, *arg, **kwarg):
+            numpoints -= numpoints % 2
+            
+            factor_linear = 1-factor_back-factor_front
+
+            x = lambda i: 2*i/numpoints - 1
+            cos_front_def = lambda x:((x<=0)-(x>0)) * (np.cos(0.5 * np.pi * x)-1)
+
+            #((x > 0.5) - (x < 0.5)) * (1 + np.cos(2 * np.pi * x)) / 2
+            cos_back_def = lambda x: ((x>=0)-(x<0))*0.5*(np.cos(np.pi * (x+1))+1)
+            
+            data = [factor_front*cos_front_def(x(i)) + factor_back*cos_back_def(x(i)) + factor_linear*x(i) for i in range(numpoints+1)]
+
+            return cls(data)
+        
+        return new_distribution
 
     @classmethod
     def from_nose_cos_distribution(cls, numpoints, border=0.5):
@@ -151,7 +183,7 @@ class Distribution(HashedList):
         def f(x):
             return x ** 2 / ((-2 + border) * border) if x < border else (2 * x - border)/(-2 + border)
 
-        dist_values = numpy.linspace(0, 1, int(numpoints / 2) + 1)
+        dist_values = np.linspace(0, 1, int(numpoints / 2) + 1)
         first_half = [f(val) for val in dist_values[::-1][:-1]]
         second_half = [-f(val) for val in dist_values]
 
@@ -173,7 +205,12 @@ class Distribution(HashedList):
                 break
         return out
 
-
-if __name__ == "__main__":
-    a = Distribution.new(30, "cos", fixed_nodes=[-0.99, -0.98, -0.97, -0.9, -0.1, 0.333, 0.9, 0.95, 0.96, 0.97])
-    print(a.data)
+    def make_symmetric_from_lower(self):
+        lower = []
+        for x in self.data:
+            if x > 0:
+                lower.append(x)
+        lower = np.array(lower)
+        upper = -lower
+        new_dist = sorted(set(upper.tolist() + lower.tolist() + [0]))
+        self.data = new_dist

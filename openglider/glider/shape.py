@@ -1,4 +1,4 @@
-from openglider.plots.drawing import PlotPart, Layout
+from openglider.vector.drawing import PlotPart, Layout
 from openglider.vector import PolyLine2D, norm
 
 
@@ -30,12 +30,20 @@ class Shape(object):
         return len(self.front) - 1
 
     @property
+    def rib_no(self):
+        return len(self.front)
+
+    @property
     def ribs(self):
         return list(zip(self.front.data.tolist(), self.back.data.tolist()))
 
     @property
     def ribs_front_back(self):
         return [self.ribs, self.front, self.back]
+
+    @property
+    def span(self):
+        return
 
     @property
     def chords(self):

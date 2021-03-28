@@ -21,9 +21,13 @@ from __future__ import division
 
 import copy
 import math
+from typing import List
 
-import numpy
+import numpy as np
 
+import openglider
+
+from openglider.glider.cell.cell import Cell
 from openglider.glider.in_out import IMPORT_GEOMETRY, EXPORT_3D
 from openglider.glider.shape import Shape
 from openglider.mesh import Mesh
@@ -31,14 +35,14 @@ from openglider.utils import consistent_value
 from openglider.utils.distribution import Distribution
 from openglider.vector.functions import norm, rotation_2d
 from openglider.vector.projection import flatten_list
-
+from openglider.lines.lineset import LineSet
 
 class Glider(object):
     cell_naming_scheme = "c{cell_no}"
     rib_naming_scheme = "r{rib_no}"
 
-    def __init__(self, cells=None, lineset=None):
-        self.cells = cells or []
+    def __init__(self, cells=None, lineset: LineSet=None):
+        self.cells: List[Cell] = cells or []
         self.lineset = lineset
 
     def __json__(self):
@@ -49,9 +53,15 @@ class Glider(object):
             cell.rib1 = ribs.index(cell.rib1)
             cell.rib2 = ribs.index(cell.rib2)
 
+        for att_point in new.lineset.attachment_points:
+            if hasattr(att_point, "rib"):
+                att_point.rib = ribs.index(att_point.rib)
+            if hasattr(att_point, "cell"):
+                att_point.cell = new.cells.index(att_point.cell)
+
         return {"cells": new.cells,
                 "ribs": ribs,
-                "lineset": self.lineset
+                "lineset": new.lineset
                 }
 
     @classmethod
@@ -61,15 +71,23 @@ class Glider(object):
                 cell.rib1 = ribs[cell.rib1]
             if isinstance(cell.rib2, int):
                 cell.rib2 = ribs[cell.rib2]
+
+        for att in lineset.attachment_points:
+            if hasattr(att, "rib") and isinstance(att.rib, int):
+                att.rib = ribs[att.rib]
+            if hasattr(att, "cell") and isinstance(att.cell, int):
+                att.cell = cells[att.cell]
         return cls(cells, lineset=lineset)
 
     def __repr__(self):
         return """
         {}
+        Area: {}
         Span: {}
         A/R: {}
         Cells: {}
         """.format(super(Glider, self).__repr__(),
+                   self.area,
                    self.span,
                    self.aspect_ratio,
                    len(self.cells))
@@ -84,6 +102,9 @@ class Glider(object):
             cell.rib2 = replace_dict[cell.rib2]
         for att in self.attachment_points:
             att.rib = replace_dict[att.rib]
+            att.get_position()
+        
+        self.lineset.recalc()
 
 
     @classmethod
@@ -95,6 +116,7 @@ class Glider(object):
         return glider
 
     def export_3d(self, path="", *args, **kwargs):
+        # todo: fix
         filetype = path.split(".")[-1]
         return EXPORT_3D[filetype](self, path, *args, **kwargs)
 
@@ -113,21 +135,22 @@ class Glider(object):
         for cell in self.cells:
             for panel in cell.panels:
                 panels.setdefault(panel.material_code, [])
-                panels[panel.material_code] += panel
+                panels[panel.material_code].append(panel)
 
         return panels
 
     def get_mesh(self, midribs=0):
-        mesh = sum([Mesh.from_rib(rib) for rib in self.ribs], Mesh())
+        mesh = Mesh()
+        for rib in self.ribs:
+            if not rib.profile_2d.has_zero_thickness:
+                mesh += rib.get_mesh(filled=True, glider=self)
 
         for cell in self.cells:
-            for panel in cell.panels:
-                mesh += panel.get_mesh(cell, midribs)
             for diagonal in cell.diagonals:
                 mesh += diagonal.get_mesh(cell)
 
         mesh += self.lineset.get_mesh()
-        mesh += self.get_mesh_panels()
+        mesh += self.get_mesh_panels(num_midribs=midribs)
         mesh += self.get_mesh_hull(midribs)
 
         return mesh
@@ -139,7 +162,6 @@ class Glider(object):
                 mesh += panel.get_mesh(cell, num_midribs)
 
         return mesh
-
 
     def get_mesh_hull(self, num_midribs=0, ballooning=True):
         ribs = self.return_ribs(num=num_midribs, ballooning=ballooning)
@@ -166,7 +188,7 @@ class Glider(object):
                     (i + 1) * numpoints + k
                 ])
 
-        return Mesh.from_indexed(numpy.concatenate(ribs), {"hull": polygons}, boundary)
+        return Mesh.from_indexed(np.concatenate(ribs), {"hull": polygons}, boundary)
 
     def return_ribs(self, num=0, ballooning=True):
         """
@@ -177,7 +199,7 @@ class Glider(object):
         """
         num += 1
         if not self.cells:
-            return numpy.array([])
+            return np.array([])
         #will hold all the points
         ribs = []
         for cell in self.cells:
@@ -200,12 +222,6 @@ class Glider(object):
 
         for i in range(len(self.ribs))[:-1]:
             self.ribs[i].profile_2d = (ribs[i] + ribs[i+1]) * 0.5
-
-    def return_average_ribs(self, num=0, num_average=8):
-        glider = self.copy()
-        glider.apply_mean_ribs(num_average)
-        glider.close_rib()
-        return glider.return_ribs(num, ballooning=False)
 
     def close_rib(self, rib=-1):
         self.ribs[rib].profile_2d *= 0.
@@ -264,11 +280,11 @@ class Glider(object):
             p.get_position()
         for node in [node for node in other2.lineset.nodes]:
             if node.type != 2:
-                node.vec *= numpy.array([1, -1, 1])
+                node.vec *= np.array([1, -1, 1])
             if all(node.force):
-                node.force *= numpy.array([1, -1, 1])
+                node.force *= np.array([1, -1, 1])
         other2.lineset.lines += other.lineset.lines
-        other2.lineset.sort_lines()
+        other2.lineset._set_line_indices()
         other2.lineset.recalc()
 
         # rename
@@ -278,14 +294,14 @@ class Glider(object):
         for rib in self.ribs:
             rib.pos *= faktor
             rib.chord *= faktor
-            # todo: scale lines,
+        self.lineset.scale(faktor)
 
     @property
     def shape_simple(self, cut_center=True):
         """
         Simple (rectangular) shape representation for spline inputs
         """
-        last_pos = numpy.array([0, 0])  # y,z
+        last_pos = np.array([0, 0])  # y,z
         front = []
         back = []
         x = 0
@@ -295,7 +311,7 @@ class Glider(object):
 
             x += width * (rib.pos[1] > 0)  # x-value
             if x == 0:
-                last_pos = numpy.array([0., 0.])
+                last_pos = np.array([0., 0.])
             y_front = -rib.pos[0] + rib.chord * rib.startpos
             y_back = -rib.pos[0] + rib.chord * (rib.startpos - 1)
             front.append([x, y_front])
@@ -308,7 +324,7 @@ class Glider(object):
         """
         Projected Shape of the glider (as it would lie on the ground - flattened)
         """
-        rot = rotation_2d(numpy.pi / 2)
+        rot = rotation_2d(np.pi / 2)
         front, back = flatten_list(self.get_spanwise(0), self.get_spanwise(1))
         return Shape([rot.dot(p) for p in front], [rot.dot(p) for p in back])
 
@@ -359,6 +375,22 @@ class Glider(object):
         self.scale(faktor)
 
     @property
+    def trailing_edge_length(self):
+        d = 0
+        for i, cell in enumerate(self.cells):
+            ballooning = (cell.ballooning[1] + cell.ballooning[-1])/2
+            vektor = cell.prof1.point(-1) - cell.prof2.point(-1)
+
+            diff = norm(vektor) * (1 + ballooning)
+
+            if i == 0 and self.has_center_cell:
+                d += diff
+            else:
+                d += 2 * diff
+
+        return d
+
+    @property
     def area(self):
         area = 0.
         if len(self.ribs) == 0:
@@ -368,8 +400,8 @@ class Glider(object):
         front[0][1] = 0  # Get only half a midrib, if there is...
         back[0][1] = 0
         for i in range(len(front) - 1):
-            area += norm(numpy.cross(front[i] - front[i + 1], back[i + 1] - front[i + 1]))
-            area += norm(numpy.cross(back[i] - back[i + 1], back[i] - front[i]))
+            area += norm(np.cross(front[i] - front[i + 1], back[i + 1] - front[i + 1]))
+            area += norm(np.cross(back[i] - back[i + 1], back[i] - front[i]))
             # By this we get twice the area of half the glider :)
             # http://en.wikipedia.org/wiki/Triangle#Using_vectors
         return area
@@ -381,8 +413,15 @@ class Glider(object):
 
     @property
     def projected_area(self):
-        complete = self.copy_complete()
-        return sum(cell.projected_area for cell in complete.cells)
+        projected_area = 0
+        for i, cell in enumerate(self.cells):
+            cell_area = cell.projected_area
+            if i == 0 and self.has_center_cell:
+                projected_area += cell_area
+            else:
+                projected_area += 2*cell_area
+            
+        return projected_area
 
     @property
     def aspect_ratio(self):
@@ -406,18 +445,38 @@ class Glider(object):
             return [rib.align([x, 0, 0]) for rib in self.ribs]
 
     @property
+    def centroid(self):
+        area = 0
+        p = 0
+
+        for i, cell in enumerate(self.cells):
+            cell_area = cell.area
+            if i == 0 and self.has_center_cell:
+                p += cell.centroid[0] * cell_area
+                area += cell.area
+            else:
+                p += 2 * cell.centroid[0] * cell_area
+                area += 2 * cell.area
+
+        return p / area
+
+    @property
     def attachment_points(self):
         points = []
         for line in self.lineset.lowest_lines:
             points += self.lineset.get_upper_influence_nodes(line)
         return points
 
-    def get_rib_attachment_points(self, rib):
+    def get_rib_attachment_points(self, rib, brake=True, include_mirrored=True):
         attach_pts = []
+        if include_mirrored:
+            if hasattr(rib, 'mirrored_rib') and rib.mirrored_rib:
+                rib = rib.mirrored_rib
         for att in self.attachment_points:
             if hasattr(att, "rib"):
                 if att.rib == rib:
-                    attach_pts.append(att)
+                    if not ((not brake) and att.rib_pos == 1.):
+                        attach_pts.append(att)
         return attach_pts
 
     def get_cell_attachment_points(self, cell):
@@ -428,9 +487,19 @@ class Glider(object):
                     attach_pts.append(att)
         return attach_pts
 
+    def get_main_attachment_point(self):
+        """
+        convention: "main" in main-attachment-point-name
+        """
+        for att in self.lineset.lower_attachment_points:
+            if "main" in att.name:
+                return att
+        else:
+            raise AttributeError("no 'main' attachment-point found.")
+
     @property
     def has_center_cell(self):
-        return self.ribs[0].pos[1] != 0
+        return abs(self.ribs[0].pos[1]) > 1.e-5
 
     @property
     def glide(self):
@@ -440,3 +509,7 @@ class Glider(object):
     def glide(self, glide):
         for rib in self.ribs:
             rib.glide = glide
+
+        angle = np.arctan(1/glide)
+        speed = norm(self.lineset.v_inf)
+        self.lineset.v_inf = np.array([np.cos(angle), 0, np.sin(angle)]) * speed

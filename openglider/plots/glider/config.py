@@ -1,4 +1,4 @@
-import numpy
+import numpy as np
 
 from openglider.utils import Config
 from openglider.utils.distribution import Distribution
@@ -6,15 +6,20 @@ from openglider.plots import marks, cuts
 
 
 class PatternConfig(Config):
+    patterns_scale = 1000
     complete_glider = True
+    debug = False
     profile_numpoints = 250
 
     cut_entry = cuts.FoldedCut
     cut_trailing_edge = cuts.ParallelCut
-    cut_design = cuts.DesignCut
+    cut_design = cuts.ParallelCut
     cut_diagonal_fold = cuts.FoldedCut
+    cut_3d = cuts.Cut3D
 
-    patterns_align_dist_y = 0.05
+    midribs = 50
+
+    patterns_align_dist_y = 0.1
     patterns_align_dist_x = patterns_align_dist_y
     patterns_scale = 1000
 
@@ -31,7 +36,7 @@ class PatternConfig(Config):
     marks_laser_diagonal = marks.Dot(0.8)
 
     marks_laser_attachment_point = marks.Dot(0.2, 0.8)
-    marks_attachment_point = marks.OnLine(marks.Rotate(marks.Cross(name="attachment_point"), numpy.pi / 4))
+    marks_attachment_point = marks.OnLine(marks.Rotate(marks.Cross(name="attachment_point"), np.pi / 4))
 
     marks_strap = marks.Inside(marks.Line(name="strap"))
 
@@ -48,7 +53,7 @@ class PatternConfig(Config):
     drib_num_folds = 1
     drib_text_position = 0.1
 
-    strap_num_folds = 0
+    strap_num_folds = 1
 
     insert_attachment_point_text = True
 
@@ -62,7 +67,7 @@ class OtherPatternConfig(PatternConfig):
     cut_design = cuts.SimpleCut
     cut_diagonal_fold = cuts.SimpleCut
     layout_seperate_panels = True
-    #cut_trailing_edge = None
+    #draw_rib = None
 
     allowance_design = 0.01
     drib_allowance_folds = 0.01

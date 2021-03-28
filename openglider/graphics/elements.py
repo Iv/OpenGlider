@@ -1,4 +1,4 @@
-import numpy
+import numpy as np
 import vtk
 from .functions import _isintlist
 from openglider.vector.functions import norm
@@ -9,7 +9,7 @@ class GraphicObject(object):
 
     def __init__(self, points, colour=None):
         self._is_direct = _isintlist(points)
-        self.points = numpy.array(points)
+        self.points = np.array(points)
         self.colour = colour
 
     #coordinates= list of points (can be nested)
@@ -30,7 +30,7 @@ class GraphicObject(object):
         colour = self.colour or graphics.default_colour
         if isinstance(colour, RGBColour):
             colour = colour.colour
-        graphics.colours.InsertNextTupleValue(colour)
+        graphics.colours.InsertNextTuple(colour)
         return cell, pointnums
 
 

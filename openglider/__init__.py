@@ -17,23 +17,27 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with OpenGlider.  If not, see <http://www.gnu.org/licenses/>.
-__version__ = '0.01'
+__version__ = '0.06'
 __author__ = 'Booya'
+__path__ = __import__('pkgutil').extend_path(__path__, __name__)
 
-import numpy
+import numpy as np
 
 from openglider.config import config
 import openglider.jsonify
-
+import openglider.glider
 
 def load(filename):
     """
     """
-    with open(filename) as infile:
-        res = openglider.jsonify.load(infile)
-    if isinstance(res, dict) and "data" in res:
-        # print(res["MetaData"])  # HakunaMaData
-        return res["data"]
+    if filename.endswith(".ods"):
+        res = openglider.glider.ParametricGlider.import_ods(filename)
+    else:
+        with open(filename) as infile:
+            res = openglider.jsonify.load(infile)
+        if isinstance(res, dict) and "data" in res:
+            # print(res["MetaData"])  # HakunaMaData
+            return res["data"]
 
     return res
 
@@ -47,10 +51,10 @@ def save(data, filename, add_meta=True):
 try:
     import __pypy__
     def cross(a,b):
-        return numpy.array([a[1]*b[2]-a[2]*b[1],
+        return np.array([a[1]*b[2]-a[2]*b[1],
                             -a[0]*b[2]+a[2]*b[0],
                             a[0]*b[1]-a[1]*b[0]
                             ])
-    numpy.cross = cross
+    np.cross = cross
 except ImportError:
     pass

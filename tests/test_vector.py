@@ -17,7 +17,7 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with OpenGlider.  If not, see <http://www.gnu.org/licenses/>.
-import numpy
+import numpy as np
 from openglider.vector.functions import norm, normalize, rotation_3d
 from openglider.vector.polyline import PolyLine, PolyLine2D
 
@@ -25,7 +25,6 @@ from openglider.vector.polyline import PolyLine, PolyLine2D
 __author__ = 'simon'
 import unittest
 import random
-from openglider import vector
 
 def makelists(self, dim):
     self.vectors = []
@@ -45,49 +44,49 @@ class TestVector3D(unittest.TestCase):
     def setUp(self, dim=3):
         makelists(self, dim)
 
-    def test_extend_total(self):
+    def test_walk_total(self):
         #Sum up the length of the list and check
         for thalist in self.vectors:
             total = 0
             for i in range(len(thalist) - 2):
                 total += norm(thalist[i] - thalist[i + 1])
                 # First Test:
-            i2 = thalist.extend(0, total)
+            i2 = thalist.walk(0, total)
             self.assertAlmostEqual(i2, len(thalist) - 2)
 
             # Second Test:
             self.assertAlmostEqual(total, thalist.get_length(0, len(thalist) - 2))
 
-    def test_extend_case_within(self):
+    def test_walk_case_within(self):
         #First point within the list
         for thalist in self.vectors:
             start = random.random() * self.numpoints
             leng = random.random() * 100 - 50
-            new = thalist.extend(start, leng)
+            new = thalist.walk(start, leng)
             leng2 = thalist.get_length(start, new)
             self.assertAlmostEqual(abs(leng), leng2, 7,
                                    "Failed for start=" + str(start) + " and leng=" + str(leng) +
                                    "\nresult: i2=" + str(new) + " leng2=" + str(leng2) +
                                    " dist=" + str(norm(thalist[start] - thalist[new])))
 
-    def test_extend_case_before(self):
+    def test_walk_case_before(self):
         #First Point before Start
         for thalist in self.vectors:
             start = -random.random() * 30
             leng = random.random() * 100 - 50
-            new = thalist.extend(start, leng)
+            new = thalist.walk(start, leng)
             leng2 = thalist.get_length(start, new)
             self.assertAlmostEqual(abs(leng), leng2, 7,
                                    "Failed for start=" + str(start) + " and leng=" + str(leng) +
                                    "\nresult: i2=" + str(new) + " leng2=" + str(leng2) +
                                    " dist=" + str(norm(thalist[start] - thalist[new])))
 
-    def test_extend_case_afterend(self):
+    def test_walk_case_afterend(self):
         #First Point further than the end
         for thalist in self.vectors:
             start = self.numpoints + random.random() * 50
             leng = random.random() * 100 - 50
-            new = thalist.extend(start, leng)
+            new = thalist.walk(start, leng)
             leng2 = thalist.get_length(start, new)
             self.assertAlmostEqual(abs(leng), leng2, 7,
                                    "Failed for start=" + str(start) + " and leng=" + str(leng) +
@@ -143,9 +142,9 @@ class TestVectorFunctions3D(unittest.TestCase):
         for axis in self.vectors:
             rotation_matrix = rotation_3d(angle, axis)
             rot = rot.dot(rotation_matrix)
-            for vector in self.vectors:
-                self.assertAlmostEqual(norm(rot.dot(vector)), norm(vector))
-                self.assertAlmostEqual(norm(rotation_matrix.dot(vector)), norm(vector))
+            for v in self.vectors:
+                self.assertAlmostEqual(norm(rot.dot(v)), norm(v))
+                self.assertAlmostEqual(norm(rotation_matrix.dot(v)), norm(v))
 
     def test_rotation_scale_2(self):
         rot = rotation_3d(0, [1,0,0])
@@ -155,9 +154,9 @@ class TestVectorFunctions3D(unittest.TestCase):
             rotation_matrix = rotation_3d(angle, axis)
             rot = rot.dot(rotation_matrix)
 
-            for vector in self.vectors:
-                p1 = rot.dot(numpy.array(vector) * scale)
-                p2 = rot.dot(vector) * scale
+            for v in self.vectors:
+                p1 = rot.dot(np.array(v) * scale)
+                p2 = rot.dot(v) * scale
                 for i in range(3):
                     self.assertAlmostEqual(p1[i], p2[i])
 

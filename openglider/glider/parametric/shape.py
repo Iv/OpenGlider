@@ -1,15 +1,17 @@
 from __future__ import division
 import math
-import numpy as numpy
+import numpy as np
 
 from openglider.glider.shape import Shape
 from openglider.vector import Interpolation, PolyLine2D
+from openglider.utils.table import Table
 
 
 class ParametricShape(object):
     num_shape_interpolation = 50
     num_distribution_interpolation = 50
     num_depth_integral = 50
+    baseline_pos = 0.25
 
     def __init__(self, front_curve, back_curve, rib_distribution, cell_num):
         self.front_curve = front_curve
@@ -32,6 +34,26 @@ class ParametricShape(object):
             self.area,
             self.aspect_ratio
         )
+    
+    def copy(self):
+        return self.__class__(
+            self.front_curve.copy(),
+            self.back_curve.copy(),
+            self.rib_distribution.copy(),
+            self.cell_num
+        )
+
+    @property
+    def baseline(self):
+        return self.get_baseline(self.baseline_pos)
+
+    def get_baseline(self, pct):
+        shape = self.get_half_shape()
+        line = []
+        for i in range(shape.rib_no):
+            line.append(shape.get_point(i, pct))
+
+        return PolyLine2D(line)
 
     @property
     def has_center_cell(self):
@@ -45,6 +67,15 @@ class ParametricShape(object):
     def half_rib_num(self):
         return self.half_cell_num + 1 - self.has_center_cell
 
+    def rescale_curves(self):
+        span = self.span
+
+        dist_scale = span / self.rib_distribution.controlpoints[-1][0]
+        self.rib_distribution.scale(dist_scale, 1)
+
+        back_scale = span / self.back_curve.controlpoints[-1][0]
+        self.back_curve.scale(back_scale, 1)
+
     @property
     def rib_dist_interpolation(self):
         """
@@ -54,15 +85,15 @@ class ParametricShape(object):
         interpolation = Interpolation([[p[1], p[0]] for p in data])
         start = self.has_center_cell / self.cell_num
         num = self.cell_num // 2 + 1
-        return [[interpolation(i), i] for i in numpy.linspace(start, 1, num)]
+        return [[interpolation(i), i] for i in np.linspace(start, 1, num)]
 
     @property
     def fast_interpolation(self):
         data = self.rib_distribution.get_sequence(self.num_distribution_interpolation).T
         start = self.has_center_cell / self.cell_num
         num = self.cell_num // 2 + 1
-        positions = numpy.linspace(start, 1, num)
-        return numpy.interp(positions, data[1], data[0])
+        positions = np.linspace(start, 1, num)
+        return np.array([np.interp(positions, data[1], data[0]), positions]).T
 
     # besser mit spezieller bezier?
     @property
@@ -77,6 +108,18 @@ class ParametricShape(object):
     @property
     def rib_x_values(self):
         return [p[0] for p in self.rib_dist_interpolation]
+
+    @property
+    def cell_x_values(self):
+        ribs = self.rib_x_values
+        if self.has_center_cell:
+            ribs.insert(0, -ribs[0])
+
+        cells = []
+        for x1, x2 in zip(ribs[:-1], ribs[1:]):
+            cells.append((x1+x2)/2)
+
+        return cells
 
     def get_half_shape(self):
         """
@@ -100,7 +143,7 @@ class ParametricShape(object):
         return self.get_half_shape().copy_complete()
 
     def __getitem__(self, pos):
-        """if first argument is negativ the point is returned mirrored"""
+        """if first argument is negative the point is returned mirrored"""
         rib_nr, rib_pos = pos
         ribs = self.ribs
         neg = (rib_nr < 0)
@@ -119,9 +162,9 @@ class ParametricShape(object):
     def get_rib_point(self, rib_no, x):
         ribs = list(self.ribs)
         if self.has_center_cell:
-            ribs = [ribs[0] * numpy.array([-1, 1])] + list(ribs)
+            ribs = [ribs[0] * np.array([-1, 1])] + list(ribs)
         rib = ribs[rib_no]
-        return numpy.array([rib[0][0], rib[0][1] + x * (rib[1][1] - rib[0][1])])
+        return np.array([rib[0][0], rib[0][1] + x * (rib[1][1] - rib[0][1])])
 
     def get_shape_point(self, rib_no, x):
         k = rib_no%1
@@ -140,7 +183,7 @@ class ParametricShape(object):
         Return A(x)
         """
         num = self.num_depth_integral
-        x_values = numpy.linspace(0, self.span, num)
+        x_values = np.linspace(0, self.span, num)
         front_int = self.front_curve.interpolation(num=num)
         back_int = self.back_curve.interpolation(num=num)
         integrated_depth = [0.]
@@ -202,7 +245,7 @@ class ParametricShape(object):
         if fixed == "span":
             self.scale(y=ar0 / ar)
         elif fixed == "area":
-            self.scale(x=numpy.sqrt(ar / ar0), y=numpy.sqrt(ar0 / ar))
+            self.scale(x=np.sqrt(ar / ar0), y=np.sqrt(ar0 / ar))
 
     @property
     def span(self):
@@ -218,6 +261,7 @@ class ParametricShape(object):
         span_0 = self.span
         if fixed == "area":
             self.scale(x=span / span_0, y=span_0 / span)
-        if fixed == "aspect_ratio":
-            print("set_span")
+        elif fixed == "aspect_ratio":
             self.scale(x=span/span_0, y=span/span_0)
+        else:
+            self.scale(x=span/span_0, y=1)

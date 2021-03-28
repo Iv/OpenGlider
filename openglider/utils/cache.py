@@ -1,5 +1,9 @@
+from __future__ import annotations
 import copy
-import numpy
+import logging
+from typing import TypeVar
+
+import numpy as np
 
 import openglider
 
@@ -11,6 +15,7 @@ class CachedObject(object):
     An object to provide cached properties and functions.
     Provide a list of attributes to hash down for tracking changes
     """
+    name: str = "unnamed"
     hashlist = ()
     cached_properties = []
 
@@ -39,7 +44,6 @@ def cached_property(*hashlist):
             self.__module__ = fget.__module__
 
             self.hashlist = hashlist
-            self.cache = {}
 
             global cache_instances
             cache_instances.append(self)
@@ -64,6 +68,55 @@ def cached_property(*hashlist):
                 return cache[self]["value"]
 
     return CachedProperty
+
+def cached_function(*hashlist):
+    class CachedFunction():
+        def __init__(self, f_get, doc=None):
+            self.function = f_get
+            self.__doc__ = doc or f_get.__doc__
+            self.__name__ = f_get.__name__
+            self.__module__ = f_get.__module__
+        
+        def __get__(self, instance, parentclass):
+            if not hasattr(instance, "cached_functions"):
+                setattr(instance, "cached_functions", {})
+            
+            if self not in instance.cached_functions:
+                class BoundCache():
+                    def __init__(self, parent, function):
+                        self.parent = parent
+                        self.function = function
+                        self.cache = {}
+                        self.hash = None
+                        self.hashlist = hashlist
+                    
+                    def __repr__(self):
+                        return f"<cached: {self.function}>"
+                    
+                    def __call__(self, *args, **kwargs):
+                        the_hash = hash_attributes(self.parent, self.hashlist)
+                        #logging.info(f"{self.parent} {the_hash} {self.hash} {args} {kwargs}")
+
+                        if the_hash != self.hash:
+                            self.cache.clear()
+                            self.hash = the_hash
+                        
+                        argument_hash = hash_list(*args, *kwargs.values())
+                        logging.debug(f"{argument_hash}, {str(args)}, {str(kwargs)}")
+
+                        if argument_hash not in self.cache:
+                            logging.debug(f"recalc, {self.function} {self.parent}")
+                            self.cache[argument_hash] = self.function(self.parent, *args, **kwargs)
+
+                        return self.cache[argument_hash]
+                
+                instance.cached_functions[self] = BoundCache(instance, self.function)
+            
+            return instance.cached_functions[self]
+
+
+
+    return CachedFunction
 
 
 def clear_cache():
@@ -96,26 +149,54 @@ def hash_attributes(class_instance, hashlist):
     """
     http://effbot.org/zone/python-hash.htm
     """
-    value = 0x345678
+    value_lst = ()
+
     for attribute in hashlist:
         el = recursive_getattr(class_instance, attribute)
-        # hash
-        try:
-            thahash = hash(el)
-        except TypeError:  # Lists p.e.
-            if openglider.config['debug']:
-                print("bad cache: "+str(class_instance.__class__.__name__)+" attribute: "+attribute)
+
+        hash_func = getattr(el, "__hash__", None)
+        hash_func = None
+        if hash_func is not None:
+            thahash = el.__hash__()
+        else:
             try:
-                thahash = hash(frozenset(el))
-            except TypeError:
-                thahash = hash(str(el))
+                thahash = hash(el)
+            except TypeError:  # Lists p.e.
+                #logging.warning(f"bad cache: {el} / {class_instance} / {attribute}, {type(el)}")
+                try:
+                    thahash = hash(frozenset(el))
+                except TypeError:
+                    thahash = hash(str(el))
+        
+        value_lst += (thahash,)
 
-        value = c_mul(1000003, value) ^ thahash
-    value = value ^ len(hashlist)
-    if value == -1:
-        value = -2
-    return value
+    return hash(value_lst)
 
+
+def hash_list(*lst):
+    value_lst = ()
+    for el in lst:
+
+        hash_func = getattr(el, "__hash__", None)
+        if hash_func is not None:
+            thahash = el.__hash__()
+        else:
+            try:
+                thahash = hash(el)
+            except TypeError:  # Lists p.e.
+                #logging.warning(f"bad cache: {el}")
+                try:
+                    thahash = hash(frozenset(el))
+                except TypeError:
+                    thahash = hash(str(el))
+        
+        value_lst += (thahash, )
+
+    return hash(value_lst)
+
+
+
+T = TypeVar('T', bound="HashedList")
 
 class HashedList(CachedObject):
     """
@@ -123,7 +204,7 @@ class HashedList(CachedObject):
     """
     name = "unnamed"
     def __init__(self, data, name=None):
-        self._data = None
+        self._data = np.array([])
         self._hash = None
         self.data = data
         self.name = name or getattr(self, 'name', None)
@@ -137,12 +218,13 @@ class HashedList(CachedObject):
         return self.data[item]
 
     def __setitem__(self, key, value):
-        self.data[key] = numpy.array(value)
+        self.data[key] = np.array(value)
         self._hash = None
 
     def __hash__(self):
         if self._hash is None:
             self._hash = hash(str(self.data))
+            #self._hash = hash("{}/{}".format(id(self), time.time()))
         return self._hash
 
     def __len__(self):
@@ -159,19 +241,19 @@ class HashedList(CachedObject):
         return "<class '{}' name: {}".format(self.__class__, self.name)
 
     @property
-    def data(self):
+    def data(self) -> np.ndarray:
         return self._data
 
     @data.setter
     def data(self, data):
         if data is not None:
-            data = list(data)  # numpy.array(zip(x,y)) is shit
-            self._data = numpy.array(data)
-            #self._data = numpy.array(data)
+            data = list(data)  # np.array(zip(x,y)) is shit
+            self._data = np.array(data)
+            #self._data = np.array(data)
             #self._data = [np.array(vector) for vector in data]  # 1,5*execution time
             self._hash = None
         else:
-            self._data = []
+            self._data = np.array([])
 
-    def copy(self):
+    def copy(self: T) -> T:
         return copy.deepcopy(self)

@@ -17,20 +17,21 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with OpenGlider.  If not, see <http://www.gnu.org/licenses/>.
-
-from __future__ import division
 import os
+import re
 import math
-import numpy
+import numpy as np
 import tempfile
-import urllib.request
 import shutil
+import logging
 
 from openglider.utils.cache import HashedList
 from openglider.utils.distribution import Distribution
 from openglider.vector.functions import norm_squared
 from openglider.vector.polygon import Polygon2D
 
+
+logger = logging.getLogger(__name__)
 
 class Profile2D(Polygon2D):
     """
@@ -41,7 +42,7 @@ class Profile2D(Polygon2D):
         super(Profile2D, self).__init__(data, name)
 
     def __imul__(self, other):
-        fakt = numpy.array([1, float(other)])
+        fakt = np.array([1, float(other)])
         return super(Profile2D, self).__imul__(fakt)
 
     def __call__(self, xval):
@@ -97,8 +98,10 @@ class Profile2D(Polygon2D):
         diff = p1 - nose  # put nose to (0,0)
         sin_sq = diff.dot([0, -1]) / norm_squared(diff)  # Angle: a.b=|a|*|b|*sin(alpha)
         cos_sq = diff.dot([1, 0]) / norm_squared(diff)
-        matrix = numpy.array([[cos_sq, -sin_sq], [sin_sq, cos_sq]])  # de-rotate and scale
-        self.data = numpy.array([matrix.dot(i - nose) for i in self.data])
+        matrix = np.array([[cos_sq, -sin_sq], [sin_sq, cos_sq]])  # de-rotate and scale
+        data = np.array([matrix.dot(i - nose) for i in self.data])
+        data[-1] = data[0]
+        self.data = data
         return self
 
     @HashedList.data.setter
@@ -109,6 +112,14 @@ class Profile2D(Polygon2D):
             while data[i + 1][0] < data[i][0] and i < len(data):
                 i += 1
             self.noseindex = i
+
+    def get_data(self, negative_x=False):
+        if not negative_x:
+            return self.data
+        else:
+            data = np.array(self.data)
+            data[:,0] *= np.array([-1.] * self.noseindex + [1.] * (len(self) - self.noseindex))
+            return data
 
     def __add__(self, other, conservative=False):
         """
@@ -128,21 +139,36 @@ class Profile2D(Polygon2D):
             point[1] += other[other(x)][1]
         return self
 
+    _re_number = r"([-+]?\d*\.\d*(?:[eE][+-]?\d+)?|\d+)"
+    _re_coord_line = re.compile(rf"\s*{_re_number}\s+{_re_number}\s*")
+
     @classmethod
     def import_from_dat(cls, path):
         """
         Import an airfoil from a '.dat' file
         """
-        profile = []
         name = 'imported from {}'.format(path)
         with open(path, "r") as p_file:
-            for line in p_file:
-                split_line = line.split()
-                if len(split_line) == 2:
-                    profile.append([float(i) for i in split_line])
-                else:
-                    name = line
+            return cls._import_dat(p_file)
+    
+    @classmethod
+    def _import_dat(cls, p_file, name="unnamed"):
+        profile = []
+        for i, line in enumerate(p_file):
+            if line.endswith(","):
+                line = line[:-1]
+
+            match = cls._re_coord_line.match(line)
+
+            if match:
+                profile.append([float(i) for i in match.groups()])
+            elif i == 0:
+                name = line.strip()
+            else:
+                logger.error(f"error in dat airfoil: {name} {i}:({line.strip()})")
+
         return cls(profile, name)
+
 
     def export_dat(self, pfad):
         """
@@ -150,9 +176,9 @@ class Profile2D(Polygon2D):
         """
         with open(pfad, "w") as out:
             if self.name:
-                out.write(str(self.name))
+                out.write(str(self.name).strip())
             for p in self.data:
-                out.write("\n{:.12f}\t{:.12}".format(*p))
+                out.write("\n{: 10.8f}\t{: 10.8f}".format(*p))
         return pfad
 
     @classmethod
@@ -199,7 +225,7 @@ class Profile2D(Polygon2D):
         profile = [[c.real, c.imag] for c in airfoil.coordinates(numpoints)]
 
         # find the smallest xvalue to reset the nose
-        x = numpy.array([i[0] for i in profile])
+        x = np.array([i[0] for i in profile])
         profile = cls(profile, "joukowsky_" + str(m))
         profile.normalize()
         profile.numpoints = numpoints
@@ -224,7 +250,7 @@ class Profile2D(Polygon2D):
         profile = [[c.real, c.imag] for c in airfoil.coordinates(numpoints)]
 
         # find the smallest xvalue to reset the nose
-        x = numpy.array([i[0] for i in profile])
+        x = np.array([i[0] for i in profile])
         profile = cls(profile, "TrefftzKuttaAirfoil_m=" + str(m) + "_tau=" + str(tau))
         profile.normalize()
         profile.numpoints = numpoints
@@ -241,7 +267,8 @@ class Profile2D(Polygon2D):
     @x_values.setter
     def x_values(self, xval):
         """Set X-Values of airfoil to defined points."""
-        self.data = [self[self(x)] for x in xval]
+        data = [(abs(x), self[self(x)][1]) for x in xval]
+        self.data = np.array(data)
 
     @property
     def numpoints(self):
@@ -271,7 +298,7 @@ class Profile2D(Polygon2D):
     @property
     def camber_line(self):
         xvals = sorted(set(map(abs, self.x_values)))
-        return numpy.array([self.profilepoint(i, 0.) for i in xvals])
+        return np.array([self.profilepoint(i, 0.) for i in xvals])
 
     #@cached_property('self')
     @property
@@ -289,7 +316,12 @@ class Profile2D(Polygon2D):
 
     @property
     def has_zero_thickness(self):
-        for x, y in self._data:
+        # big problem when used with flap
+        if hasattr(self, 'data_without_flap'):
+            data = self.data_without_flap
+        else:
+            data = self._data
+        for x, y in data:
             if abs(y) > 0.0001:
                 return False
         return True
@@ -302,8 +334,9 @@ class Profile2D(Polygon2D):
     def lower_indices(self):
         return range(self.noseindex + 1, len(self))
 
-    def insert_point(self, pos):
-        if pos in self.x_values:
+    def insert_point(self, pos, tolerance=1e-5):
+        nearest_x_value = self.nearest_x_value(pos)
+        if abs(nearest_x_value - pos) < tolerance:
             pass
         else:
             point = self.profilepoint(pos)
@@ -312,22 +345,67 @@ class Profile2D(Polygon2D):
             data.insert(int(ik + 1), point)
             self.data = data
 
+    def remove_points(self, start, end, tolerance=None):
+        new_data = []
+        tolerance = 0. or tolerance
+        for i, x in enumerate(self.x_values):
+            if not (x > (start + tolerance) and x < (end - tolerance)):
+                new_data.append(self.data[i])
+        self.data = np.array(new_data)
+
+    def move_nearest_point(self, pos):
+        ik = self(pos)
+        diff = ik % 1.
+        if diff < 0.5:
+            self.data[int(ik)] = self.profilepoint(pos)
+        else:
+            self.data[int(ik) + 1] = self.profilepoint(pos)
+
+    def nearest_x_value(self, x):
+        min_x_value = None
+        min_diff = None
+        for i_x in self.x_values:
+            diff = abs(x - i_x)
+            if not min_x_value or diff < min_diff:
+                min_diff = diff
+                min_x_value = i_x
+        return min_x_value
+
     def apply_function(self, foo):
-        data = numpy.array(self.data)
+        data = np.array(self.data)
         self.data = [foo(i, upper=index < self.noseindex) for index, i in enumerate(data)]
 
     @classmethod
     def from_url(cls, name='atr72sm', url='http://m-selig.ae.illinois.edu/ads/coord/'):
+        import urllib.request
         airfoil_name = name + '.dat'
         temp_name = os.path.join(tempfile.gettempdir(), airfoil_name)
         with urllib.request.urlopen(url + airfoil_name) as data_file, open(temp_name, 'w') as dat_file:
             dat_file.write(data_file.read().decode('utf8'))
-        data = numpy.loadtxt(temp_name, usecols=(0, 1), skiprows=1)
+        data = np.loadtxt(temp_name, usecols=(0, 1), skiprows=1)
+        if data[0, 0] > 1.5:
+            data = data[1:]
         return cls(data, name)
 
-    def calc_drag(self, re=200000, cl=0.7):
+    def set_flap(self, flap_begin, flap_amount):
+        @np.vectorize
+        def f(x, a, b):
+            c1, c2, c3 = -a**2*b/(a**2 - 2*a + 1), 2*a*b/(a**2 - 2*a + 1), -b/(a**2 - 2*a + 1)
+            if x < a:
+                return 0.
+            if x > 1:
+                return -b
+            return c1 + c2 * x + c3 * x**2
+        x, y = self.data.T
+        dy = f(x, flap_begin, flap_amount)
+        if not hasattr(self, 'data_without_flap'):
+            self.data_without_flap = self.data
+        self.data = np.array([x, y + dy]).T
+
+
+    def calc_drag(self, re=2e6, cl=0.7):
         if not shutil.which('xfoil'):
-            print('command xfoil is not available')
+            logger.error("xfoil is not available")
             return None
         from openglider.airfoil.XFoilCalc import calc_drag
         return calc_drag(self, re, cl)

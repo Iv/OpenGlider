@@ -1,73 +1,142 @@
 from __future__ import division
 
 import numbers
+import re
+
 import ezodf
-import numpy
+import numpy as np
+import logging
+import typing
 
 from openglider.airfoil import BezierProfile2D, Profile2D
-from openglider.vector.spline import Bezier, SymmetricBezier
+from openglider.vector.spline import Bezier, SymmetricBezier, SymmetricBSpline
 from openglider.vector import Interpolation
 
 from openglider.glider.parametric.arc import ArcCurve
 from openglider.glider.parametric.shape import ParametricShape
 from openglider.glider.parametric.lines import UpperNode2D, LowerNode2D, BatchNode2D, Line2D, LineSet2D
 from openglider.glider.rib import MiniRib
-from openglider.glider.ballooning import BallooningBezier
+from openglider.glider.ballooning import BallooningBezier, BallooningBezierNeu
+from openglider.utils.table import Table
 
+
+logger = logging.getLogger(__name__)
 element_keywords = {
     "cuts": ["cells", "left", "right", "type"],
     "a": "",
 }
 
+def filter_elements_from_table(table: Table, key: str, length: int):
+    new_table = Table()
+    for column in range(table.num_columns):
+        if table[0, column] == key:
+            new_table.append_right(table.get_columns(column, column+length-1))
+    
+    return new_table
 
 def import_ods_2d(Glider2D, filename, numpoints=4, calc_lineset_nodes=False):
+    logger.info(f"Import file: {filename}")
     ods = ezodf.opendoc(filename)
     sheets = ods.sheets
+    tables = Table.load(filename)
 
-    cell_sheet = sheets[1]
-    rib_sheet = sheets[2]
+    cell_sheet = tables[1]
+    rib_sheet = tables[2]
 
     # file-version
-    if cell_sheet[0, 0].value == "V2" or cell_sheet[0, 0].value == "V2":
-        file_version = 2
+    file_version_match = re.match(r"V([0-9]*)", str(cell_sheet["A1"]))
+    if file_version_match:
+        file_version = int(file_version_match.group(1))
     else:
         file_version = 1
+    logger.info(f"Loading file version {file_version}")
     # ------------
 
     # profiles = [BezierProfile2D(profile) for profile in transpose_columns(sheets[3])]
     profiles = [Profile2D(profile, name) for name, profile in transpose_columns(sheets[3])]
+    for foil in profiles:
+        foil.normalize()
 
-    try:
-        geometry = get_geometry_parametric(sheets[5])
-    except Exception:
+    if file_version > 2:
+        has_center_cell = not tables[0][0, 0] == 0
+        cell_no = (tables[0].num_rows - 2) * 2 + has_center_cell
+        geometry = get_geometry_parametric(tables[5], cell_no)
+    else:
         geometry = get_geometry_explicit(sheets[0])
+        has_center_cell = geometry["shape"].has_center_cell
 
     balloonings = []
-    for name, baloon in transpose_columns(sheets[4]):
+    for i, (name, baloon) in enumerate(transpose_columns(sheets[4])):
+        ballooning_type = str(sheets[4][0,2*i+1].value).upper()
         if baloon:
-            i = 0
-            while baloon[i + 1][0] > baloon[i][0]:
-                i += 1
+            if ballooning_type == "V1":
+                i = 0
+                while baloon[i + 1][0] > baloon[i][0]:
+                    i += 1
 
-            upper = baloon[:i + 1]
-            lower = baloon[i + 1:]
+                upper = baloon[:i + 1]
+                lower = [(x, -y) for x, y in baloon[i + 1:]]
 
-            balloonings.append(BallooningBezier(upper, lower, name=name))
+                ballooning = BallooningBezier(upper, lower, name=name)
+                balloonings.append(BallooningBezierNeu.from_classic(ballooning))
+
+            elif ballooning_type == "V2":
+                i = 0
+                while baloon[i + 1][0] > baloon[i][0]:
+                    i += 1
+
+                upper = baloon[:i + 1]
+                lower = baloon[i + 1:]
+
+                ballooning = BallooningBezier(upper, lower, name=name)
+                balloonings.append(BallooningBezierNeu.from_classic(ballooning))
+
+            elif ballooning_type == "V3":
+                balloonings.append(BallooningBezierNeu(baloon))
+
+            else:
+                raise ValueError("No ballooning type specified")
+
 
     data = {}
-    datasheet = sheets[-1]
-    assert isinstance(datasheet, ezodf.Sheet)
-    for row in datasheet.rows():
-        if len(row) > 1:
-            data[row[0].value] = row[1].value
+    datasheet = tables[-1]
+    for row in range(datasheet.num_rows):
+        name = datasheet[row, 0]
+        if name:
+            data[name] = datasheet[row, 1]
 
-    # Attachment points: rib_no, id, pos, force
-    attachment_points = get_attachment_points(rib_sheet, cell_sheet)
+    
+    attachment_points_cell_table = filter_elements_from_table(cell_sheet, "ATP", 4)
+    attachment_points_cell_table.append_right(filter_elements_from_table(cell_sheet, "AHP", 4))
+
+    attachment_points_rib_table = filter_elements_from_table(rib_sheet, "AHP", 3)
+    attachment_points_rib_table.append_right(filter_elements_from_table(rib_sheet, "ATP", 3))
+
+    attachment_points = LineSet2D.read_attachment_point_table(
+        cell_table=attachment_points_cell_table,
+        rib_table=attachment_points_rib_table,
+        half_cell_no=geometry["shape"].half_cell_num
+    )
+
+    attachment_points = {n.name: n for n in attachment_points}
+
     attachment_points_lower = get_lower_aufhaengepunkte(data)
+
+    def get_grouped_elements(sheet, names, keywords):
+        group_kw = keywords[0]
+        elements = []
+        for name in names:
+            elements += read_elements(sheet, name, len_data=len(keywords)-1)
+        
+        element_dct = to_dct(elements, keywords)
+
+        return group(element_dct, group_kw)
+
 
     # RIB HOLES
     rib_hole_keywords = ["ribs", "pos", "size"]
     rib_holes = read_elements(rib_sheet, "QUERLOCH", len_data=2)
+    rib_holes += read_elements(rib_sheet, "HOLE", len_data=2)
     rib_holes = to_dct(rib_holes, rib_hole_keywords)
     rib_holes = group(rib_holes, "ribs")
 
@@ -75,6 +144,13 @@ def import_ods_2d(Glider2D, filename, numpoints=4, calc_lineset_nodes=False):
     rigidfoils = read_elements(rib_sheet, "RIGIDFOIL", len_data=3)
     rigidfoils = to_dct(rigidfoils, rigidfoil_keywords)
     rigidfoils = group(rigidfoils, "ribs")
+
+    cell_rigidfoils = get_grouped_elements(
+        cell_sheet, 
+        ["RIGIDFOIL"], 
+        ["cells", "x_start", "x_end", "y"]
+        )
+
 
     # CUTS
     def get_cuts(names, target_name):
@@ -89,6 +165,7 @@ def import_ods_2d(Glider2D, filename, numpoints=4, calc_lineset_nodes=False):
 
     cuts = get_cuts(["EKV", "EKH", "folded"], "folded")
     cuts += get_cuts(["DESIGNM", "DESIGNO", "orthogonal"], "orthogonal")
+    cuts += get_cuts(["CUT3D", "cut_3d"], "cut_3d")
     cuts += get_cuts(["singleskin"], "singleskin")
 
     # Diagonals: center_left, center_right, width_l, width_r, height_l, height_r
@@ -96,7 +173,6 @@ def import_ods_2d(Glider2D, filename, numpoints=4, calc_lineset_nodes=False):
     for res in read_elements(cell_sheet, "QR", len_data=6):
         height1 = res[5]
         height2 = res[6]
-
         # migration
         if file_version == 1:
             # height (0,1) -> (-1,1)
@@ -116,21 +192,20 @@ def import_ods_2d(Glider2D, filename, numpoints=4, calc_lineset_nodes=False):
     straps_keywords = ["cells", "left", "right"]
     for res in read_elements(cell_sheet, "VEKTLAENGE", len_data=2):
         straps.append({
-            "left_front": (res[1] - 0.02, -1),
-            "left_back": (res[1] + 0.02, -1),
-            "right_front": (res[1] - 0.02, -1),
-            "right_back": (res[1] - 0.02, -1),
+            "left": res[1],
+            "right": res[2],
+            "width": 0.02,
             "cells": res[0]
         })
 
     for res in read_elements(cell_sheet, "STRAP", len_data=3):
         # [cell_no, x_left, x_right, width]
-        straps.append({"left_front": (res[1] - res[3] / 2, -1),
-                       "left_back": (res[1] + res[3] / 2, -1),
-                       "right_front": (res[2] - res[3] / 2, -1),
-                       "right_back": (res[2] + res[3] / 2, -1),
-                       "cells": res[0]
-                       })
+        straps.append({
+            "left": res[1],
+            "right": res[2],
+            "width": res[3],
+            "cells": res[0]
+            })
     straps = group(straps, "cells")
 
     materials = get_material_codes(cell_sheet)
@@ -145,16 +220,20 @@ def import_ods_2d(Glider2D, filename, numpoints=4, calc_lineset_nodes=False):
         })
     miniribs = group(miniribs, "cells")
 
+    lineset_table = tables[6]
+    lineset = LineSet2D.read_input_table(lineset_table, attachment_points_lower, attachment_points)
+
     glider_2d = Glider2D(elements={"cuts": cuts,
                                    "holes": rib_holes,
                                    "diagonals": diagonals,
                                    "rigidfoils": rigidfoils,
+                                   "cell_rigidfoils": cell_rigidfoils,
                                    "straps": straps,
                                    "materials": materials,
                                    "miniribs": miniribs},
                          profiles=profiles,
                          balloonings=balloonings,
-                         lineset=read_linesheet(sheets[6], attachment_points_lower, attachment_points),
+                         lineset=lineset,
                          speed=data["SPEED"],
                          glide=data["GLIDE"],
                          **geometry)
@@ -187,12 +266,12 @@ def get_geometry_explicit(sheet):
         chord = line[1]
         span = line[2]
         x = line[3]
-        y += numpy.cos(alpha) * (span - span_last)
-        z -= numpy.sin(alpha) * (span - span_last)
+        y += np.cos(alpha) * (span - span_last)
+        z -= np.sin(alpha) * (span - span_last)
 
-        alpha += line[4] * numpy.pi / 180  # angle after the rib
+        alpha += line[4] * np.pi / 180  # angle after the rib
 
-        aoa.append([span, line[5] * numpy.pi / 180])
+        aoa.append([span, line[5] * np.pi / 180])
         arc.append([y, z])
         front.append([span, -x])
         back.append([span, -x - chord])
@@ -201,24 +280,27 @@ def get_geometry_explicit(sheet):
         profile_merge.append([span, line[8]])
         ballooning_merge.append([span, line[9]])
 
-        zrot.append([span, line[7] * numpy.pi / 180])
+        zrot.append([span, line[7] * np.pi / 180])
 
         span_last = span
 
-    def symmetric_fit(data):
-        not_from_center = data[0][0] == 0
+    def symmetric_fit(data, bspline=True):
+        not_from_center = int(data[0][0] == 0)
         mirrored = [[-p[0], p[1]] for p in data[not_from_center:]][::-1] + data
-        return SymmetricBezier.fit(mirrored)
+        if bspline:
+            return SymmetricBSpline.fit(mirrored)
+        else:
+            return SymmetricBezier.fit(mirrored)
 
     has_center_cell = not front[0][0] == 0
     cell_no = (len(front) - 1) * 2 + has_center_cell
 
     start = (2 - has_center_cell) / cell_no
 
-    const_arr = [0.] + numpy.linspace(start, 1, len(front) - (not has_center_cell)).tolist()
+    const_arr = [0.] + np.linspace(start, 1, len(front) - (not has_center_cell)).tolist()
     rib_pos = [0.] + [p[0] for p in front[not has_center_cell:]]
     rib_pos_int = Interpolation(zip(rib_pos, const_arr))
-    rib_distribution = [[i, rib_pos_int(i)] for i in numpy.linspace(0, rib_pos[-1], 30)]
+    rib_distribution = [[i, rib_pos_int(i)] for i in np.linspace(0, rib_pos[-1], 30)]
 
     rib_distribution = Bezier.fit(rib_distribution)
 
@@ -230,30 +312,44 @@ def get_geometry_explicit(sheet):
         "arc": arc_curve,
         "aoa": symmetric_fit(aoa),
         "zrot": symmetric_fit(zrot),
-        "profile_merge_curve": symmetric_fit(profile_merge),
-        "ballooning_merge_curve": symmetric_fit(ballooning_merge)
-
+        "profile_merge_curve": symmetric_fit(profile_merge, bspline=True),
+        "ballooning_merge_curve": symmetric_fit(ballooning_merge, bspline=True)
     }
 
 
-def get_geometry_parametric(sheet):
+def get_geometry_parametric(table: Table, cell_num):
     data = {}
-    column = 0
-    while sheet[0, column].value:
-        rows = []
-        row = 1
-        while sheet[row, column].value:
-            rows.append([sheet[row, column].value, sheet[row, column+1].value])
-            row += 1
+    
+    for key in ("front", "back", "rib_distribution", "arc", "zrot", "aoa", "profile_merge_curve", "ballooning_merge_curve"):
+        column = None
+        for col in range(table.num_columns):
+            if table[0, col] == key:
+                column = col
+        if column is not None:
+            points = []
+            for row in range(1, table.num_rows):
+                if table[row, column] is not None:
+                    points.append([table[row, column], table[row, column+1]])
+            data[key] = points
 
-        data[sheet[0, column].value] = rows
-        column += 2
+    parametric_shape = ParametricShape(
+        SymmetricBSpline(data["front"]),
+        SymmetricBSpline(data["back"]),
+        Bezier(data["rib_distribution"]),
+        cell_num
+    )
 
-    print(data)
-    raise Exception
+    arc_curve = ArcCurve(SymmetricBSpline(data["arc"]))
 
-    return data
-
+    return {
+        "shape": parametric_shape,
+        "arc": arc_curve,
+        "aoa": SymmetricBSpline(data["aoa"]),
+        "zrot": SymmetricBSpline(data["zrot"]),
+        "profile_merge_curve": SymmetricBSpline(data["profile_merge_curve"]),
+        "ballooning_merge_curve": SymmetricBSpline(data["ballooning_merge_curve"])
+    }
+    
 
 def get_material_codes(sheet):
     materials = read_elements(sheet, "MATERIAL", len_data=1)
@@ -268,33 +364,20 @@ def get_material_codes(sheet):
     return ret
 
 
-def get_attachment_points(rib_sheet, cell_sheet, midrib=False):
-    # coming: (num, name, (cell_pos,) rib_pos, force
-    # UpperNode2D(rib_no, rib_pos, cell_pos, force, name, layer)
-    attachment_points = [UpperNode2D(args[0], args[2], force=args[3], name=args[1])
-                         for args in read_elements(rib_sheet, "AHP", len_data=3)]
-
-    cell_attachment_points = [UpperNode2D(args[0], args[3], args[2],args[4], args[1])
-                              for args in read_elements(cell_sheet, "AHP", len_data=4)]
-    # attachment_points.sort(key=lambda element: element.nr)
-
-    dct = {node.name: node for node in (attachment_points + cell_attachment_points)}
-
-    return dct
-    # return attachment_points
-
-
 def get_lower_aufhaengepunkte(data):
     aufhaengepunkte = {}
-    xyz = {"X": 0, "Y": 1, "Z": 2}
+    axis_to_index = {"X": 0, "Y": 1, "Z": 2}
+    regex = re.compile("AHP([XYZ])(.*)")
     for key in data:
-        if key is not None and "AHP" in key:
-            pos = int(key[4])
-            aufhaengepunkte.setdefault(pos, [0, 0, 0])
-            which = key[3].upper()
-            aufhaengepunkte[pos][xyz[which]] = data[key]
-    return {nr: LowerNode2D([0, 0], pos, nr)
-            for nr, pos in aufhaengepunkte.items()}
+        if key is not None:
+            res = regex.match(key)
+            if res:
+                axis, pos = res.groups()
+
+                aufhaengepunkte.setdefault(pos, [0, 0, 0])
+                aufhaengepunkte[pos][axis_to_index[axis]] = data[key]
+    return {name: LowerNode2D([0, 0], pos, name)
+            for name, pos in aufhaengepunkte.items()}
 
 
 def transpose_columns(sheet, columnswidth=2):
@@ -327,62 +410,7 @@ def transpose_columns(sheet, columnswidth=2):
     return result
 
 
-def read_linesheet(sheet, attachment_points_lower, attachment_points_upper):
-    # upper -> dct {name: node}
-    num_rows = sheet.nrows()
-    num_cols = sheet.ncols()
-    linelist = []
-    current_nodes = [None for row in range(num_cols)]
-    row = 0
-    column = 0
-    count = 0
-
-    while row < num_rows:
-        value = sheet.get_cell([row, column]).value  # length or node_no
-
-        if value is not None:
-            if column == 0:  # first (line-)floor
-                current_nodes = [attachment_points_lower[int(sheet.get_cell([row, 0]).value)]] + \
-                                [None for __ in range(num_cols)]
-                column += 1
-
-            else:
-                # We have a line
-                line_type_name = sheet.get_cell([row, column + 1]).value
-
-                lower_node = current_nodes[column // 2]
-
-                # gallery
-                if column + 2 >= num_cols - 1 or sheet.get_cell([row, column + 2]).value is None:
-
-                    upper = attachment_points_upper[value]
-                    line_length = None
-                    row += 1
-                    column = 0
-                # other line
-                else:
-                    upper = BatchNode2D([0, 0])
-                    current_nodes[column // 2 + 1] = upper
-                    line_length = sheet.get_cell([row, column]).value
-                    column += 2
-
-                linelist.append(
-                    Line2D(lower_node, upper, target_length=line_length, line_type=line_type_name))
-                count += 1
-
-        else:
-            if column == 0:
-                column += 1
-            elif column + 2 >= num_cols:
-                row += 1
-                column = 0
-            else:
-                column += 2
-
-    return LineSet2D(linelist)
-
-
-def read_elements(sheet, keyword, len_data=2):
+def read_elements(sheet: Table, keyword, len_data=2):
     """
     Return rib/cell_no for the element + data
 
@@ -391,14 +419,14 @@ def read_elements(sheet, keyword, len_data=2):
 
     elements = []
     column = 0
-    while column < sheet.ncols():
-        if sheet.get_cell([0, column]).value == keyword:
-            # print("found, ", j, sheet[0, j].value, sheet.ncols(), sheet[1, j].value)
-            for row in range(1, sheet.nrows()):
-                line = [sheet.get_cell([row, column + k]).value for k in range(len_data)]
-                # print(line)
-                if line[0] is not None:
-                    elements.append([row - 1] + line)
+    while column < sheet.num_columns:
+        if sheet[0, column] == keyword:
+            for row in range(1, sheet.num_rows):
+                line = [sheet[row, column + k] for k in range(len_data)]
+                
+                if line[0]:
+                    line.insert(0, row-1)
+                    elements.append(line)
             column += len_data
         else:
             column += 1

@@ -17,11 +17,16 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with OpenGlider.  If not, see <http://www.gnu.org/licenses/>.
-import numpy
+import numpy as np
+import math
 
 from openglider.lines import Node
-from openglider.plots.marks import Polygon
+from openglider.vector.polygon import Circle
 from openglider.vector.polyline import PolyLine2D
+from openglider.vector.functions import set_dimension
+from openglider.vector.spline import Bezier
+from openglider.vector import norm
+from openglider.vector.transformation import Rotation, Translation, Scale
 
 
 class RigidFoil(object):
@@ -41,7 +46,7 @@ class RigidFoil(object):
 
         if dsq is not None:
             dsq = max(dsq, 0)
-            return self.distance + (self.circle_radius - numpy.sqrt(dsq)) * 0.35
+            return self.distance + (self.circle_radius - np.sqrt(dsq)) * 0.35
         return self.distance
 
     def __json__(self):
@@ -61,22 +66,54 @@ class RigidFoil(object):
         return flat
 
     def _get_flattened(self, rib):
+        max_segment = 0.005  # 5mm
         profile = rib.profile_2d
         profile_normvectors = PolyLine2D(profile.normvectors)
+
         start = profile(self.start)
         end = profile(self.end)
 
-        positions = []
+        point_range = []
+        last_node = None
         for p in profile[start:end]:
-            if p[1] > 0:
-                positions.append(-p[0])
+            sign = -1 if p[1] > 0 else +1
+
+            if last_node is not None:
+                diff = norm(p - last_node) * rib.chord
+                if diff > max_segment:
+                    segments = int(math.ceil(diff/max_segment))
+                    point_range += list(np.linspace(point_range[-1], sign*p[0], segments))[1:]
+                else:
+                    point_range.append(sign*p[0])
             else:
-                positions.append(p[0])
+                point_range.append(sign*p[0])
 
-        outer_curve = profile[start:end].scale(rib.chord)
-        normvectors = profile_normvectors[start:end]
+            last_node = p
 
-        return [p - n*self.func(pos)*rib.chord for pos, p, n in zip(positions, outer_curve, normvectors)]
+        indices = [profile(x) for x in point_range]
+
+        return [(profile[index] - profile_normvectors[index]*self.func(x))*rib.chord for index, x in zip(indices, point_range)]
+
+
+class FoilCurve(object):
+    def __init__(self, front=0, end=0.17):
+        self.front = front
+        self.end = end
+
+    def get_flattened(self, rib, numpoints=30):
+        curve = [
+            [self.end, 0.75],
+            [self.end-0.05, 1],
+            [self.front, 0],
+            [self.end-0.05, -1],
+            [self.end, -0.75]
+        ]
+        profile = rib.profile_2d
+
+        cp = [profile.align(point)*rib.chord for point in curve]
+
+
+        return Bezier(cp).interpolation(numpoints)
 
 
 class GibusArcs(object):
@@ -112,11 +149,11 @@ class GibusArcs(object):
         point_2 = profile.profilepoint(self.pos + size)
 
         gib_arc = [[], []]  # first, second
-        circle = Polygon(edges=num_points)(point_1, point_2)[0][1:] # todo: is_center -> true
+        circle = Circle(point_1, point_2).get_sequence()[1:]
+        #circle = Polygon(edges=num_points)(point_1, point_2)[0][1:] # todo: is_center -> true
         is_second_run = False
-        #print(circle)
+        
         for i in range(len(circle)):
-            #print(airfoil.contains_point(circle[i]))
             if profile.contains_point(circle[i]) or \
                     (i < len(circle) - 1 and profile.contains_point(circle[i + 1])) or \
                     (i > 1 and profile.contains_point(circle[i - 1])):
@@ -127,12 +164,11 @@ class GibusArcs(object):
         # Cut first and last
         gib_arc = gib_arc[1] + gib_arc[0]  # [secondlist] + [firstlist]
         start2 = profile.cut(gib_arc[0], gib_arc[1], start)
-        #print(gib_arc)
         stop = profile.cut(gib_arc[-2], gib_arc[-1], start)
         # Append Profile_List
         gib_arc += profile.get(start2.next()[0], stop.next()[0]).tolist()
 
-        return numpy.array(gib_arc) * rib.chord
+        return np.array(gib_arc) * rib.chord
 
 
 class CellAttachmentPoint(Node):
@@ -143,6 +179,9 @@ class CellAttachmentPoint(Node):
         self.rib_pos = rib_pos
         self.name = name
         self.force = force
+
+    def __repr__(self):
+        return "<Attachment point '{}' ({})>".format(self.name, self.rib_pos)
 
     def __json__(self):
         return {
@@ -167,11 +206,15 @@ class AttachmentPoint(Node):
         self.name = name
         self.force = force
 
+    def __repr__(self):
+        return "<Attachment point '{}' ({})>".format(self.name, self.rib_pos)
+
     def __json__(self):
         return {"rib": self.rib,
                 "name": self.name,
                 "rib_pos": self.rib_pos,
                 "force": self.force}
+
 
     def get_position(self):
         self.vec = self.rib.profile_3d[self.rib.profile_2d(self.rib_pos)]
@@ -179,24 +222,40 @@ class AttachmentPoint(Node):
 
 
 class RibHole(object):
-    def __init__(self, pos, size=0.5):
+    def __init__(self, pos, size=0.5, vertical_shift=0., rotation=0.):
         self.pos = pos
+        if isinstance(size, (list, tuple)):
+            size = np.array(list(size))
         self.size = size
+        self.vertical_shift = vertical_shift
+        self.rotation = rotation  # rotation about p1
 
     def get_3d(self, rib, num=20):
-        hole = self.get_flattened(rib, num=num)
-        return [rib.align([p[0], p[1], 0], scale=False) for p in hole]
+        hole = self.get_points(rib, num=num)
+        return rib.align_all(set_dimension(hole, 3))
 
     def get_flattened(self, rib, num=80, scale=True):
+        points = self.get_points(rib, num).data
+        if scale:
+            points *= rib.chord
+        return PolyLine2D(points)
+        #return Polygon(p1, p2, num=num, scale=self.size, is_center=False)[0]
+
+    def get_points(self, rib, num=80):
         prof = rib.profile_2d
         p1 = prof[prof(self.pos)]
         p2 = prof[prof(-self.pos)]
-        if scale:
-            p1 *= rib.chord
-            p2 *= rib.chord
-        poly = Polygon(scale=self.size, edges=num, name="rib_hole")
-        return poly(p1, p2)[0]
-        #return Polygon(p1, p2, num=num, scale=self.size, is_center=False)[0]
+
+        phi = np.linspace(0, np.pi * 2, num + 1)
+        points = np.array([np.cos(phi), np.sin(phi)]).T
+        #delta = (p2 - p1) / 2 * self.vertical_shift + (p1 + p2) / 2
+        move_1 = Translation(p1)
+        move_2 = Translation((p2 - p1) / 2 * (1 + self.vertical_shift))
+        rot = Rotation(self.rotation)
+        scale = Scale(np.linalg.norm(p2 - p1) / 2 * self.size)
+        points = (scale * move_2 * rot * move_1).apply(points)
+
+        return PolyLine2D(points, name=f"{rib.name}-hole")
 
     def get_center(self, rib, scale=True):
         prof = rib.profile_2d
@@ -205,7 +264,43 @@ class RibHole(object):
         if scale:
             p1 *= rib.chord
             p2 *= rib.chord
-        return (p1 + p2) / 2
+        move_1 = Translation(p1)
+        move_2 = Translation((p2 - p1) / 2 * (1 + self.vertical_shift))
+        rot = Rotation(self.rotation)
+        return (move_2 * rot * move_1)([0., 0.])
+
+    def __json__(self):
+        return {
+            "pos": self.pos,
+            "size": self.size,
+            "vertical_shift": self.vertical_shift,
+            "rotation": self.rotation}
+
+
+class RibSquareHole:
+    def __init__(self, start, stop, height):
+        pass
+
+    def get_3d(self, rib, num=20):
+        hole = self.get_points(rib, num=num)
+        return rib.align_all(set_dimension(hole, 3))
+
+    def get_flattened(self, rib, num=80, scale=True):
+        points = self.get_points(rib, num).data
+        if scale:
+            points *= rib.chord
+        return PolyLine2D(points)
+        #return Polygon(p1, p2, num=num, scale=self.size, is_center=False)[0]
+
+    def get_points(self, rib, num=80):
+        points = []
+
+        return PolyLine2D(points, name=f"{rib.name}-hole")
+
+    def __json__(self):
+        return {
+            }
+
 
 
 class Mylar(object):

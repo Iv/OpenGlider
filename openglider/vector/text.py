@@ -1,8 +1,8 @@
-import numpy
+import numpy as np
 
 from openglider.vector.functions import normalize
 from openglider.vector.polyline import PolyLine2D
-from openglider.plots.drawing.part import PlotPart
+from openglider.vector.drawing.part import PlotPart
 
 text_vectors = {
     "1": [[0.2, 0.5], [0.6, 1.], [0.6, 0.]],
@@ -54,6 +54,7 @@ text_vectors = {
 
 
 class Text(object):
+    letters = text_vectors
     def __init__(self, text, p1, p2, size=None, align="left", height=0.8, space=0.2, valign=0.5):
         """
         Vector Text
@@ -67,8 +68,8 @@ class Text(object):
         :param valign: vertical align ( -0.5: bottom, 0: centered, 0.5: top)
         """
         self.text = text
-        self.p1 = numpy.array(p1[:])
-        self.p2 = numpy.array(p2[:])
+        self.p1 = np.array(p1[:])
+        self.p2 = np.array(p2[:])
         self.size = size
         self.height = height
         self.space = space
@@ -85,6 +86,17 @@ class Text(object):
             "space": self.space,
             "align": self.align
         }
+
+    def get_letter(self, letter, replace_unknown=True):
+        letter = letter.upper()
+        if letter not in self.letters:
+                if replace_unknown:
+                    letter = "_"
+                else:
+                    raise KeyError("Letter {} from word '{}' not available".format(letter, self.text.upper()))
+        
+        data = self.letters[letter]
+        return [text_vectors[letter]]
 
     def get_vectors(self, replace_unknown=True):
         # todo: add valign (space)
@@ -104,22 +116,18 @@ class Text(object):
 
         r_x, r_y = diff[0], diff[1]
 
-        rot = numpy.array([[r_x, -r_y*self.height], [r_y, r_x*self.height]])
+        rot = np.array([[r_x, -r_y*self.height], [r_y, r_x*self.height]])
 
-        p1 += numpy.array([-r_y, r_x]) * (self.valign - 0.5)
+        p1 += np.array([-r_y, r_x]) * (self.valign - 0.5)
 
-        for letter in self.text.upper():
-            if letter not in text_vectors:
-                if replace_unknown:
-                    letter = "_"
-                else:
-                    raise KeyError("Letter {} from word '{}' not available".format(letter, self.text.upper()))
-
-            if text_vectors[letter]:
-                vectors.append(PolyLine2D(
-                    [p1 + rot.dot(p) for p in text_vectors[letter]],
-                    name="text"
-                ))
+        for letter in self.text:
+            points = self.get_letter(letter, replace_unknown=replace_unknown)
+            for lst in points:
+                if lst:
+                    vectors.append(PolyLine2D(
+                        [p1 + rot.dot(p) for p in lst],
+                        name="text"
+                    ))
             p1 += diff
         return vectors
 

@@ -41,45 +41,48 @@ in a platform-neutral way.
 root_dir = os.path.dirname(__file__)
 if root_dir != '':
     os.chdir(root_dir)
-og_dir = 'openglider'
+og_dirs = ['openglider', 'freecad']
 
-for dirpath, dirnames, filenames in os.walk(og_dir):
-    # Ignore PEP 3147 cache dirs and those whose names start with '.'
-    dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != '__pycache__']
-    parts = fullsplit(dirpath)
-    package_name = '.'.join(parts)
-    if '__init__.py' in filenames:
-        packages.append(package_name)
-    elif filenames:
-        relative_path = []
-        while '.'.join(parts) not in packages:
-            relative_path.append(parts.pop())
-        relative_path.reverse()
-        if relative_path:
-            path = os.path.join(*relative_path)
-        else:
-            path = ""
-        package_files = package_data.setdefault('.'.join(parts), [])
-        package_files.extend([os.path.join(path, f) for f in filenames])
+for directory in og_dirs:
+    for dirpath, dirnames, filenames in os.walk(directory):
+        # Ignore PEP 3147 cache dirs and those whose names start with '.'
+        dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != '__pycache__']
+        parts = fullsplit(dirpath)
+        package_name = '.'.join(parts)
+        if '__init__.py' in filenames:
+            packages.append(package_name)
+        elif filenames:
+            relative_path = []
+            while '.'.join(parts) not in packages:
+                relative_path.append(parts.pop())
+            relative_path.reverse()
+            if relative_path:
+                path = os.path.join(*relative_path)
+            else:
+                path = ""
+            package_files = package_data.setdefault('.'.join(parts), [])
+            package_files.extend([os.path.join(path, f) for f in filenames])
 
 print(package_data, packages)
 setup(
     name='OpenGlider',
-    version="0.1",  #openglider.__version__,
-    description="tool fpr glider design",
+    version="0.05",  #openglider.__version__,
+    description="tool for glider design",
     packages=packages,
     package_data=package_data,
     license='GPL-v3',
     # long_description=open('README.md').read(),
-    install_requires=["ezodf",
-                      "pyexcel",
-                      "pyexcel-ods",
-                      "svgwrite",
-                      "numpy",
-                      "ezdxf",
-                      "meshpy"
-                      ],
+    install_requires=["svgwrite",
+                    "numpy",
+                    "scipy",
+                    "ezdxf",
+                    "ezodf",
+                    "lxml", # missing in ezodf:q;
+                    "pyexcel-ods",
+                    "meshpy"
+                    ],
     author='Booya',
     url='www.openglider.org',
-    download_url="https://github.com/hiaselhans/OpenGlider/tarball/0.01dev0"
+    download_url="https://github.com/hiaselhans/OpenGlider/tarball/0.01dev0",
+    include_package_data=True
 )

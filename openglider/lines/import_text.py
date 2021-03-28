@@ -17,22 +17,22 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with OpenGlider.  If not, see <http://www.gnu.org/licenses/>.
-
+import logging
 
 from openglider.lines.functions import *
 from openglider.lines.elements import Line, Node
 from openglider.lines import LineSet
-
-
-# IMPORT TEXT FILE#################
+from openglider.lines.line_types import LineType
 from openglider.vector.functions import normalize
+
+
+logger = logging.getLogger(__name__)
 
 
 def import_lines(path):
     key_dict = {
         "NODES": [8, store_nodes, []],  # 8 tab-seperated values
-        "LINES": [5, store_lines, []],
-        "CALCPAR": [5, store_calc_par, {}]
+        "LINES": [5, store_lines, []]
     }
     return import_file(path, key_dict)
 
@@ -40,8 +40,8 @@ def import_lines(path):
 def store_nodes(values, thalist, key_dict):
     n = Node(try_convert(values[0], int))
     n.type = try_convert(values[1], int)
-    n.vec = numpy.array([try_convert(x, float) for x in values[2:5]])
-    n.force = numpy.array([try_convert(x, float) for x in values[5:8]])
+    n.vec = np.array([try_convert(x, float) for x in values[2:5]])
+    n.force = np.array([try_convert(x, float) for x in values[5:8]])
     thalist.append(n)
 
 
@@ -52,19 +52,8 @@ def store_lines(values, thalist, key_dict):
     lower = key_dict["NODES"][2][lower_no]
     l = Line(number=try_convert(values[0], int), upper_node=upper, lower_node=lower,
              v_inf=[10, 0, 0], target_length=try_convert(values[3], float))
-
-    # l.type = values[4]
+    l.type = LineType.get(values[4])
     thalist.append(l)
-
-
-def store_calc_par(values, calc_par, key_dict):
-    calc_par["GEOSTEPS"] = try_convert(values[0], int)
-    calc_par["SAGSTEPS"] = try_convert(values[1], int)
-    calc_par["ITER"] = try_convert(values[2], int)
-    speed = calc_par["SPEED"] = try_convert(values[3], float)
-    glide = calc_par["GLIDE"] = try_convert(values[4], float)
-    calc_par["V_INF"] = (
-        speed * normalize(numpy.array([glide, 0., 1.])))
 
 
 def try_convert(str, form):
@@ -91,7 +80,7 @@ def import_file(path, key_dict):
                     if key_dict[current_key][0] == len(line):
                         key_dict[current_key][1](line, key_dict[current_key][2], key_dict)  # function from key-dict
                     elif line[0] != "#":
-                        print("error in inputfile, line " + str(line_nr))
+                        logger.error(f"error in inputfile, line {line_nr}")
             else:
                 current_key = None
             line_nr += 1

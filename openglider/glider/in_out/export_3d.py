@@ -1,5 +1,5 @@
 import math
-import numpy
+import numpy as np
 
 # from openglider.graphics import Graphics3D, Line
 from openglider.vector.functions import norm, normalize
@@ -11,7 +11,7 @@ def export_obj(glider, path, midribs=0, numpoints=None, floatnum=6, copy=True):
     if numpoints:
         other.profile_numpoints = numpoints
 
-    mesh = glider.get_mesh(midribs=midribs)
+    mesh = other.get_mesh(midribs=midribs)
     mesh.export_obj(path)
 
 
@@ -25,7 +25,7 @@ def export_json(glider, path, numpoints, midribs=0, wake_panels=1,
 
     class Node():
         def __init__(self, p, n_id=None, is_wake=False):
-            self.point = numpy.array(p)
+            self.point = np.array(p)
             self.n_id = n_id
             self.is_wake = is_wake
 
@@ -46,7 +46,7 @@ def export_json(glider, path, numpoints, midribs=0, wake_panels=1,
         def is_wake(self):
             return any([tha_node.is_wake for tha_node in self.nodes])
 
-        # This is just lazyness..
+        # This is just laziness..
         def get_neighbours(self, panel_list):
             self.neighbours = [self.get_neighbour(self.nodes[0], self.nodes[1],
                                                   pan_list=panel_list),
@@ -72,12 +72,12 @@ def export_json(glider, path, numpoints, midribs=0, wake_panels=1,
                     "neighbours": self.neighbour_ids(),
                     "nodes": self.node_nos}
 
-    glide_alpha = numpy.arctan(glider.glide)
+    glide_alpha = np.arctan(glider.glide)
     glider = glider.copy_complete()
     glider.profile_numpoints = numpoints
     rib_len = len(glider.ribs[0].profile_2d)
 
-    v_inf = numpy.array([numpy.sin(glide_alpha), 0, numpy.cos(glide_alpha)])
+    v_inf = np.array([np.sin(glide_alpha), 0, np.cos(glide_alpha)])
     node_ribs = [[Node(node) for node in rib[1:]] for rib in
                  glider.return_ribs(midribs)]
     nodes_flat = []
@@ -141,8 +141,6 @@ def export_json(glider, path, numpoints, midribs=0, wake_panels=1,
             else:
                 panel.neighbours[3] = row[0]
 
-    print(panels[10].is_wake, panels[10].neighbours[1].is_wake, panels[10].neighbours[3].is_wake)
-
     # for pan in panels:
     #    pan.get_neighbours(panels)
     #    pan.node_nos = [nodes_flat.index if tha_node is not None else None for tha_node in pan.nodes]
@@ -186,7 +184,7 @@ def export_apame(glider, path="", midribs=0, numpoints=None, *other):
     ribs = other.return_ribs(midribs)
     v_inf = glider.lineset.v_inf
     speed = norm(v_inf)
-    glide = numpy.arctan(v_inf[2]/v_inf[0])
+    glide = np.arctan(v_inf[2]/v_inf[0])
     # write config
     outfile = open(path, "w")
     outfile.write("APAME input file\nVERSION 3.0\n")
@@ -224,8 +222,8 @@ def export_apame(glider, path="", midribs=0, numpoints=None, *other):
     return outfile.close()
 
 
-def paraBEM_Panels(glider, midribs=0, profile_numpoints=None, num_average=0, symmetric=False, distribution=None):
-    """return the vertices, panels and the trailing edge of a glider, as paraBEM objects.
+def parabem_Panels(glider, midribs=0, profile_numpoints=None, num_average=0, symmetric=False, distribution=None):
+    """return the vertices, panels and the trailing edge of a glider, as parabem objects.
 
     midribs:           midribs of a cell spanwise. if num_average is greater then
                        0 ballooning will be disables
@@ -234,8 +232,8 @@ def paraBEM_Panels(glider, midribs=0, profile_numpoints=None, num_average=0, sym
     symmetric:         set to True if a symmetric result is expected (this will
                        reduce evaluation time)
     """
-    # paraBEM is not a dependency of openglider so if problems occure here, get the module.
-    import paraBEM
+    # parabem is not a dependency of openglider so if problems occur here, get the module.
+    import parabem
 
     if symmetric:
         glider = glider.copy()
@@ -248,7 +246,9 @@ def paraBEM_Panels(glider, midribs=0, profile_numpoints=None, num_average=0, sym
         glider.profile_x_values = Distribution.from_nose_cos_distribution(profile_numpoints, 0.2)
 
     if num_average > 0:
-        ribs = glider.return_average_ribs(midribs, num_average)
+        glider.apply_mean_ribs(num_average)
+        glider.close_rib()
+        ribs = glider.return_ribs(midribs, ballooning=False)
     else:
         ribs = glider.return_ribs(midribs)
     # deleting the last vertex of every rib (no trailing edge gap)
@@ -300,10 +300,57 @@ def paraBEM_Panels(glider, midribs=0, profile_numpoints=None, num_average=0, sym
             else:
                 panels.append(panel)
 
-    vertices = [paraBEM.PanelVector3(*point) for point in vertices]
-    panels = [paraBEM.Panel3([vertices[nr] for nr in panel]) for panel in panels]
+    vertices = [parabem.PanelVector3(*point) for point in vertices]
+    panels = [parabem.Panel3([vertices[nr] for nr in panel]) for panel in panels]
     trailing_edge = [vertices[nr] for nr in trailing_edge]
     for nr in sym_panels:
         panels[nr].set_symmetric()
 
     return vertices, panels, trailing_edge
+
+
+def export_leparagliding(glider, path):
+    import pandas as pd
+    import jinja2
+
+    ####### computing the basic geometry
+    glider = glider.copy_complete()
+    aoa_abs = np.array([r.aoa_absolute for r in glider.ribs])
+    aoa_rel = np.array([r.aoa_relative for r in glider.ribs])
+    gamma = np.arctan(1 / glider.glide)
+    alpha_max = np.rad2deg(aoa_abs[0] + gamma)
+    washin = np.rad2deg(aoa_abs)
+    y_le, xp, z = np.array([r.pos for r in glider.ribs]).T * 1.0e2
+    chord = np.array([r.chord for r in glider.ribs]) * 1.0e2
+    y_te = y_le + chord
+    x_rib = glider.shape_simple.front.data.T[0] * 1.0e2
+    beta = np.rad2deg(np.array([r.arcang for r in glider.ribs]))
+    rp = np.array([0.] * len(beta))
+    ribs_number = np.array(list(range(len(rp))), dtype=int)
+    data = { "Rib": ribs_number,
+             "x_rib": x_rib,
+             "y_LE": y_le,
+             "y_TE": y_te,
+             "xp": xp,
+             "z": -z,
+             "beta": beta,
+             "RP": rp,
+             "Washin": washin}
+    data_frame = pd.DataFrame(data)
+    if glider.has_center_cell:
+        data_frame = data_frame[1:]
+    rib_geo =  data_frame.to_string(index=None, float_format=lambda x: "{:.3f}".format(x))
+
+    ############# exporting the glider
+
+    env = jinja2.Environment(loader = jinja2.FileSystemLoader("."))
+    template = env.get_template('leparagliding.txt.template')
+
+    with open(path, 'w') as fn:
+        fn.write(template.render(
+            GR=glider.glide,
+            alpha_max="{:.2f}".format(alpha_max),
+            rib_geo=rib_geo,
+            num_cells=len(glider.copy_complete().cells),
+            num_ribs=len(glider.copy_complete().ribs)
+        ))

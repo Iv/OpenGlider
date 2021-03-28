@@ -21,7 +21,7 @@ from __future__ import division
 import os
 import random
 import sys
-import numpy
+import numpy as np
 
 
 try:
@@ -51,7 +51,7 @@ class TestGlider(GliderTestClass):
         right.mirror()
         ribs = left.return_ribs(num)
         polygons = left.return_polygon_indices(ribs)
-        points = numpy.concatenate(ribs)
+        points = np.concatenate(ribs)
         objects = []
         objects += [openglider.graphics.Red]
         objects += map(openglider.graphics.Polygon, polygons)
@@ -142,8 +142,8 @@ class TestGlider(GliderTestClass):
     def test_singleskin(self):
         rib = self.glider.ribs[1]
         rib.single_skin_par = {"att_dist": 0.05, "height": 0.5}
-        print(rib.getMesh(self.glider))
-        graphics.Graphics([openglider.graphics.Line(rib.getMesh(self.glider))])
+        print(rib.get_hull(self.glider))
+        graphics.Graphics([openglider.graphics.Line(rib.get_hull(self.glider))])
 
 
 if __name__ == '__main__':

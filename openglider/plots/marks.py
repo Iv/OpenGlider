@@ -1,13 +1,17 @@
 import math
-import numpy
+import numpy as np
 
 from openglider.vector.functions import rotation_2d
 from openglider.vector.polyline import PolyLine2D
+from openglider.vector.transformation import Translation, Scale, Rotation
 
 default_scale = 0.8
 
+class Mark(object):
+    def __repr__(self):
+        return self.__class__.__name__
 
-class Polygon(object):
+class Polygon(Mark):
     def __init__(self, edges=3, scale=default_scale, name=None):
         self.scale = scale
         self.num_edges = edges
@@ -18,8 +22,9 @@ class Polygon(object):
 
     def __call__(self, p1, p2):
         center = (p1+p2)/2
-        diff = (p2-center) * self.scale
+        diff = self.scale*(p2-center)
         points = [center + rotation_2d(math.pi*2*i/self.num_edges).dot(diff) for i in range(self.num_edges+1)]
+        #points = np.array(points) * self.scale
         return [PolyLine2D(points, name=self.name)]
 
 
@@ -31,7 +36,7 @@ class Triangle(Polygon):
         return {"scale": self.scale}
 
 
-class Arrow(object):
+class Arrow(Mark):
     def __init__(self, left=True, scale=default_scale, name=None):
         self.left = left
         self.scale = scale
@@ -45,15 +50,15 @@ class Arrow(object):
 
     def __call__(self, p1, p2):
         d = (p2 - p1)*self.scale
-        dr = numpy.array([-d[1], d[0]])/math.sqrt(2)
+        dr = np.array([-d[1], d[0]])/math.sqrt(2)
         if not self.left:
             dr = -dr
 
         return [PolyLine2D([p1, p1+d, p1+d/2+dr, p1], name=self.name)]
 
 
-class Line(object):
-    def __init__(self, rotation=0, offset=0, name=None):
+class Line(Mark):
+    def __init__(self, rotation=0., offset=0., name=None):
         self.rotation = rotation
         self.offset = offset
         self.name = name
@@ -81,7 +86,7 @@ class Cross(Line):
         return l1(p1, p2) + l2(p1, p2)
 
 
-class Dot(object):
+class Dot(Mark):
     def __init__(self, *positions):
         self.positions = positions
 
@@ -96,7 +101,7 @@ class Dot(object):
         return [PolyLine2D([p]) for p in dots]
 
 
-class _Modify(object):
+class _Modify(Mark):
     def __init__(self, func):
         self.func = func
 
