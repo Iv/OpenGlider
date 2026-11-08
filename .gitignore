@@ -51,6 +51,11 @@ nosetests.
 # Doxygen generated Doc
 # Doc/doxygen/*
 docs/sphinx/build/*
+docs/build
 examples
 #scripts
 __pycache__*
+
+# pixi environments
+.pixi
+*.egg-info

@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openglider"
+version = "0.8.1"
+description = "glider design software for FreeCAD"
+readme = "README.md"
+license = {file = "LICENSE"}
+maintainers = [
+    {name = "looooo", email = "sppedflyer@gmail.com"},
+]
+requires-python = ">=3.8"
+dependencies = ["svgwrite", "numpy", "scipy", "ezdxf", 
+                "ezodf", "lxml", "pyexcel-ods", "meshpy", "matplotlib"]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[project.urls]
+source = "https://github.com/booya-at/OpenGlider"
+
+[tool.pytest.ini_options]
+# Siehe tests/README.md. Standard: nur test_*.py; visual_test_*.py per Marker "visual" exkludiert.
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v"
+markers = [
+    "visual: Visual/GUI-Tests (exkludiert mit -m \"not visual\", nur diese mit -m visual)",
+]
+
+[tool.setuptools]
+packages = ["openglider",
+            "openglider.airfoil",
+            "openglider.glider",
+            "openglider.glider.cell",
+            "openglider.glider.in_out",
+            "openglider.glider.parametric",
+            "openglider.glider.rib",
+            "openglider.graphics",
+            "openglider.jsonify",
+            "openglider.jsonify.migration",
+            "openglider.lines",
+            "openglider.lines.line_types",
+            "openglider.mesh",
+            "openglider.plots",
+            "openglider.plots.glider",
+            "openglider.plots.sketches",
+            "openglider.plots.spreadsheets",
+            "openglider.utils",
+            "openglider.vector",
+            "openglider.vector.drawing",
+            "openglider.vector.spline",
+            "freecad", 
+            "freecad.glider",
+            "freecad.glider.tools"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"freecad.glider" = ["icons/*", "ui/*", "data/*"]

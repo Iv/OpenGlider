@@ -17,19 +17,19 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with OpenGlider.  If not, see <http://www.gnu.org/licenses/>.
-__version__ = '0.06'
-__author__ = 'Booya'
-__path__ = __import__('pkgutil').extend_path(__path__, __name__)
 
-import numpy as np
+from . version import __version__
+__author__ = "Booya"
+__path__ = __import__("pkgutil").extend_path(__path__, __name__)
+
 
 from openglider.config import config
 import openglider.jsonify
 import openglider.glider
 
+
 def load(filename):
-    """
-    """
+    """ """
     if filename.endswith(".ods"):
         res = openglider.glider.ParametricGlider.import_ods(filename)
     else:
@@ -43,18 +43,5 @@ def load(filename):
 
 
 def save(data, filename, add_meta=True):
-    with open(filename,"w") as outfile:
+    with open(filename, "w") as outfile:
         openglider.jsonify.dump(data, outfile, add_meta=add_meta)
-
-
-# Monkey-patch numpy cross for pypy
-try:
-    import __pypy__
-    def cross(a,b):
-        return np.array([a[1]*b[2]-a[2]*b[1],
-                            -a[0]*b[2]+a[2]*b[0],
-                            a[0]*b[1]-a[1]*b[0]
-                            ])
-    np.cross = cross
-except ImportError:
-    pass

@@ -1,8 +1,7 @@
 # OpenGlider
 
-[![Build Status](https://travis-ci.org/booya-at/OpenGlider.svg?branch=develop)](https://travis-ci.org/booya-at/OpenGlider)
-[![Coverage Status](https://img.shields.io/coveralls/hiaselhans/OpenGlider.svg)](https://coveralls.io/r/hiaselhans/OpenGlider)
-[![Documentation Status](https://readthedocs.org/projects/openglider/badge/?version=latest)](https://readthedocs.org/projects/openglider/?badge=latest)
+[![run all tests](https://github.com/booya-at/OpenGlider/actions/workflows/tests.yml/badge.svg)](https://github.com/booya-at/OpenGlider/actions/workflows/tests.yml)
+[![Documentation](https://github.com/booya-at/OpenGlider/actions/workflows/docs.yml/badge.svg)](https://github.com/booya-at/OpenGlider/actions/workflows/docs.yml)
 
 A future open source paraglider design software (still a WIP)
 
@@ -26,6 +25,9 @@ Or manually install all dependencies (using distro-repos, easy_install or pip)
 * (svgwrite)
 * (vtk)
 
+### Install with pixi
+if you have pixi installed just launch pixi and run this command 
+`pixi run freecad` to launch freecad with openglider installed.
 
 ### Install with conda
 
@@ -37,40 +39,42 @@ conda create -n openglider openglider freecad meshpy -c conda-forge
 
 ## Documentation
 
+**[Online-Dokumentation (Sphinx)](https://booya-at.github.io/OpenGlider/)** – Installation, Konzepte, FreeCAD-Workbench, API-Referenz.
+
 Every module inside openglider *should* have a README where the functionality is documented.  
 Please have a look at the [base module](./openglider/README.md).
 
 Also have a look at the [gui-tutorial](https://booya-at.github.io/openglider-tutorial)
 
-### Unittests and Visual Tests
+### Tests
 
-To run all unittests, run this from the main directory:
-```bash
-./testall.py
-```
+Tests laufen mit **pytest**. Abhängigkeiten: `pip install -e ".[test]"` oder pixi-Environment nutzen.
 
-Or use `-a` flag to also run visual tests
-```bash
-./testall.py -a
-```
+| Was | Befehl |
+|-----|--------|
+| Nur Unit-Tests (ohne Visual/GUI) | `pytest tests/ -m "not visual"` oder `./testall.py` |
+| Alle Tests inkl. Visual | `pytest tests/` oder `./testall.py -a` |
+| Mit pixi | `pixi run test` (Unit) · `pixi run test-all` (alle) |
+
+Ausführliche Beschreibung, Marker, Verzeichnisstruktur: [tests/README.md](tests/README.md).
 
 ## Development Screenshots
 
 While still being in an early status, here are a few screenshots showing progress made so far:
 
-![screenshot gui](docs/freecad_gui.png)
+![screenshot gui](docs_old/freecad_gui.png)
 glider workbench gui  
 
-![screenshot testcell with miniribs](docs/screen.png)
+![screenshot testcell with miniribs](docs_old/screen.png)
 testcell with miniribs
 
-![screenshot demokite with central minirib](docs/screen2.png)
+![screenshot demokite with central minirib](docs_old/screen2.png)
 demo kite with central minirib
 
-![screenshot demokite plots](docs/screen3.png)
+![screenshot demokite plots](docs_old/screen3.png)
 demo kite plots
 
-![plots](docs/plots.svg)
+![plots](docs_old/plots.svg)
 plots
 
 ## Roadmap

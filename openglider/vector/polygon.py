@@ -7,7 +7,7 @@ from openglider.vector.functions import cut, rotation_2d, vector_angle, norm
 class Polygon2D(PolyLine2D):
     @property
     def isclosed(self):
-        return self.data[0] == self.data[-1]
+        return bool(numpy.allclose(self.data[0], self.data[-1]))
 
     def close(self):
         """
@@ -23,7 +23,7 @@ class Polygon2D(PolyLine2D):
         except ArithmeticError:
             return False
 
-    #@cached-property(self)
+    # @cached-property(self)
     @property
     def centerpoint(self):
         # todo: http://en.wikipedia.org/wiki/Polygon#Area_and_centroid
@@ -36,30 +36,41 @@ class Polygon2D(PolyLine2D):
     def area(self):
         # http://en.wikipedia.org/wiki/Polygon#Area_and_centroid
         area = 0
-        n = len(self)-1
+        n = len(self) - 1
         for i in range(len(self)):
-            i2 = (i+1) % n
-            area += self[i][0]*self[i2][1] - self[i][1]*self[i2][0]
+            i2 = (i + 1) % n
+            area += self[i][0] * self[i2][1] - self[i][1] * self[i2][0]
 
-        return area/2
+        return area / 2
 
     def contains_point(self, point):
         """
         Check if a Polygon contains a point or not.
-        reference: http://en.wikipedia.org/wiki/Point_in_polygon
+        Uses ray-casting: horizontal ray from point to +infinity; odd crossings = inside.
 
         :returns: boolean
         """
-        # using ray-casting-algorithm
-        cuts = self.cut(point, self.centerpoint, cut_only_positive=True)
-        return bool(sum(1 for _ in cuts) % 2)
-        # todo: alternative: winding number
+        point = numpy.asarray(point)
+        px, py = point[0], point[1]
+        n = len(self.data) - 1  # closed: last point == first
+        count = 0
+        for i in range(n):
+            x1, y1 = self.data[i][0], self.data[i][1]
+            x2, y2 = self.data[i + 1][0], self.data[i + 1][1]
+            # Ray at y=py crosses edge only if one endpoint is strictly below, one strictly above
+            if (y1 < py and y2 >= py) or (y2 < py and y1 >= py):
+                if y2 != y1:
+                    t = (py - y1) / (y2 - y1)
+                    x = x1 + t * (x2 - x1)
+                    if x > px:
+                        count += 1
+        return bool(count % 2 == 1)
 
 
 class CirclePart(object):
-    """
+    r"""
     "A piece of the cake"
-    
+
        /) <-- p1
       /   )
      /     )
@@ -68,6 +79,7 @@ class CirclePart(object):
       \   )
        \) <-- p3
     """
+
     def __init__(self, p1, p2, p3):
         self.p1 = p1
         self.p2 = p2
@@ -79,8 +91,8 @@ class CirclePart(object):
         n1 = numpy.array([-l1[1], l1[0]])
         n2 = numpy.array([-l2[1], l2[0]])
 
-        c1 = p1 + l1/2
-        c2 = p2 + l2/2
+        c1 = p1 + l1 / 2
+        c2 = p2 + l2 / 2
 
         d1 = c1 + n1
         d2 = c2 + n2
@@ -97,13 +109,14 @@ class CirclePart(object):
         return PolyLine2D(lst)
 
     def _repr_svg_(self):
-
         svg = "<svg>"
+
         def point(p, color="red"):
-            return '<circle cx="{}" cy="{}" r="1" stroke="{}" fill="transparent" stroke-width="5"/>'.format(p[0], p[1], color)
+            return '<circle cx="{}" cy="{}" r="1" stroke="{}" fill="transparent" stroke-width="5"/>'.format(
+                p[0], p[1], color
+            )
 
         svg += point(self.center, "blue")
-
 
         svg += point(self.p1)
         svg += point(self.p2)
@@ -122,7 +135,10 @@ class Ellipse(object):
 
     def get_sequence(self, num=20):
         phi = numpy.linspace(0, numpy.pi * 2, num + 1)
-        points = [self.center + numpy.array([numpy.cos(x), numpy.sin(x)]) * self.radius for x in phi]
+        points = [
+            self.center + numpy.array([numpy.cos(x), numpy.sin(x)]) * self.radius
+            for x in phi
+        ]
 
         return PolyLine2D(points)
 
@@ -130,9 +146,9 @@ class Ellipse(object):
 class Circle(Ellipse):
     def __init__(self, center, radius):
         super().__init__(center, radius, radius, 0)
-    
+
     @classmethod
     def from_p1_p2(cls, p1, p2):
-        center = (p1 + p2)/2
-        radius = norm(p2 - p1)/2
+        center = (p1 + p2) / 2
+        radius = norm(p2 - p1) / 2
         return cls(center, radius)
