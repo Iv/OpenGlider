@@ -39,6 +39,20 @@ if TYPE_CHECKING:
     from openglider.glider.cell import Cell
 
 
+def at_length(line, u):
+    """point of a polyline at the fraction u of its length (0 .. 1)"""
+    P = np.asarray(line.data if hasattr(line, "data") else line, float)
+    s = np.r_[0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
+    if s[-1] <= 0:
+        return P[0]
+    return np.array([np.interp(u * s[-1], s, P[:, k]) for k in range(P.shape[1])])
+
+
+def width_at(t, len_left, len_right):
+    """width between the seams' ends at t (linear between the two seam lengths)"""
+    return len_left * (1 - t) + len_right * t
+
+
 class DiagonalRib(object):
     def __init__(
         self,
@@ -48,10 +62,20 @@ class DiagonalRib(object):
         right_back,
         material_code="",
         name="unnamed",
+        shape=None,
     ):
         """
         [left_front, left_back, right_front, right_back]
         -> Cut: (x_value, height)
+        :param shape: optional outline between the two seams (default: the whole quadrilateral between
+            them): sections [t, a, b] along the part, t = 0 at the seam on rib1 .. 1 at the seam on rib2,
+            a < b the two edges in metres from the axis (the line between the seam centres), across, measured
+            along the seams' direction; None: that edge has no point here (each edge runs straight between its
+            own points, so the corners of the two edges need not be at the same t);
+            the ends are the seams themselves, between the sections the edges are straight. E.g. a tape
+            of 50 mm spread out to the seam on rib2 over its last 20 %: [[0.8, -0.025, 0.025]] (at t = 0
+            the seam is 50 mm wide); a tape spread at both ends: [[0.3, -0.025, 0.025], [0.7, -0.025, 0.025]].
+            A seam off the axis gives the asymmetric ('arrow') ends by itself.
         :param left_front as x-value
         :param left_back as x-value
         :param right_front as x-value
@@ -66,9 +90,11 @@ class DiagonalRib(object):
         self.right_back = right_back
         self.material_code = material_code
         self.name = name
+        fl = lambda v: None if v is None else float(v)  # noqa: E731
+        self.shape = sorted(([float(t), fl(a), fl(b)] for t, a, b in (shape or [])), key=lambda s_: s_[0])
 
     def __json__(self):
-        return {
+        d = {
             "left_front": self.left_front,
             "left_back": self.left_back,
             "right_front": self.right_front,
@@ -76,6 +102,9 @@ class DiagonalRib(object):
             "material_code": self.material_code,
             "name": self.name,
         }
+        if self.shape:
+            d["shape"] = self.shape
+        return d
 
     @property
     def width_left(self):
@@ -111,6 +140,45 @@ class DiagonalRib(object):
     def mirror(self):
         self.left_front, self.right_front = self.right_front, self.left_front
         self.left_back, self.right_back = self.right_back, self.left_back
+        self.shape = sorted(([1 - t, a, b] for t, a, b in getattr(self, "shape", [])), key=lambda s_: s_[0])
+
+    def _u_range(self, y, len_left, len_right):
+        """the part's extent across at y (0 = seam on rib1 .. 1 = seam on rib2), as fractions of the
+        local width between the seams' ends (0 .. 1 = the whole quadrilateral)"""
+        shape = getattr(self, "shape", [])
+        if not shape:
+            return 0.0, 1.0
+        # each edge has its own points (None: that edge has no point at this section)
+        lo_k = [(0.0, 0.0)] + [(t, 0.5 + a / width_at(t, len_left, len_right)) for t, a, _ in shape if a is not None] + [(1.0, 0.0)]
+        hi_k = [(0.0, 1.0)] + [(t, 0.5 + b / width_at(t, len_left, len_right)) for t, _, b in shape if b is not None] + [(1.0, 1.0)]
+        lo = float(np.interp(y, [k[0] for k in lo_k], [k[1] for k in lo_k]))
+        hi = float(np.interp(y, [k[0] for k in hi_k], [k[1] for k in hi_k]))
+        return max(0.0, lo), min(1.0, hi)
+
+    def get_outline_uv(self, cell, num_seam=None):
+        """closed outline in (u, y): u along the seams (0 front .. 1 back), y across (0 rib1 .. 1 rib2)"""
+        left, right = self.get_3d(cell)
+        ll, lr = left.get_length(), right.get_length()
+        shape = getattr(self, "shape", [])
+        y_hi = sorted(set(t for t, _, b in shape if b is not None))
+        y_lo = sorted(set(t for t, a, _ in shape if a is not None))
+        n1 = num_seam or len(left)
+        n2 = num_seam or len(right)
+        out = [(u, 0.0) for u in np.linspace(0, 1, n1)]
+        out += [(self._u_range(y, ll, lr)[1], y) for y in y_hi]
+        out += [(u, 1.0) for u in np.linspace(1, 0, n2)]
+        out += [(self._u_range(y, ll, lr)[0], y) for y in y_lo[::-1]]
+        return out
+
+    def get_outline_3d(self, cell):
+        """u is the fraction of the seam length (the shape's widths are lengths along the seams)"""
+        left, right = self.get_3d(cell)
+        return PolyLine([at_length(left, u) * (1 - y) + at_length(right, u) * y for u, y in self.get_outline_uv(cell)])
+
+    def get_flattened_outline(self, cell) -> PolyLine2D:
+        """the part developed (seams flattened as in get_flattened, the shape mapped between them)"""
+        left, right = self.get_flattened(cell)
+        return PolyLine2D([at_length(left, u) * (1 - y) + at_length(right, u) * y for u, y in self.get_outline_uv(cell)])
 
     def get_center_length(self, cell):
         p1 = cell.rib1.point(self.center_left)
@@ -157,20 +225,28 @@ class DiagonalRib(object):
             # the outermost points build the segments
             num_left = len(left)
             num_right = len(right)
+            len_left, len_right = left.get_length(), right.get_length()
             count = 0
+            y_values = sorted(set(np.linspace(0.0, 1.0, insert_points + 2).tolist()
+                                  + [t for t, _, _ in getattr(self, "shape", [])]))
 
-            for y_pos in np.linspace(0.0, 1.0, insert_points + 2):
+            for y_pos in y_values:
                 # from left to right
                 line_points = []
                 line_points_2d = []  # TODO: mesh 2d (x, y) -> 3d nodes
                 line_indices = []
                 num_points = int(num_left * (1.0 - y_pos) + num_right * y_pos)
 
-                for x_pos in np.linspace(0.0, 1.0, num_points):
-                    line_points.append(
-                        left[x_pos * (num_left - 1)] * (1.0 - y_pos)
-                        + right[x_pos * (num_right - 1)] * y_pos
-                    )
+                u_lo, u_hi = self._u_range(y_pos, len_left, len_right)
+                shaped = bool(getattr(self, "shape", []))
+                for x_pos in np.linspace(u_lo, u_hi, num_points):
+                    if shaped:  # u = fraction of the seam length (as the shape's widths)
+                        line_points.append(at_length(left, x_pos) * (1.0 - y_pos) + at_length(right, x_pos) * y_pos)
+                    else:
+                        line_points.append(
+                            left[x_pos * (num_left - 1)] * (1.0 - y_pos)
+                            + right[x_pos * (num_right - 1)] * y_pos
+                        )
                     line_points_2d.append([x_pos, y_pos])
                     line_indices.append(count)
                     count += 1
@@ -236,7 +312,7 @@ class DoubleDiagonalRib(object):
 
 
 class TensionStrap(DiagonalRib):
-    def __init__(self, left, right, width, height=-1, material_code="", name=""):
+    def __init__(self, left, right, width, height=-1, material_code="", name="", shape=None):
         """
         Similar to a Diagonalrib but always connected to the bottom-sail.
         :param left: left center of TensionStrap as x-value
@@ -253,15 +329,19 @@ class TensionStrap(DiagonalRib):
             (right + width / 2, height),
             material_code,
             name,
+            shape,
         )
 
     def __json__(self):
-        return {
+        d = {
             "left": self.center_left,
             "right": self.center_right,
             "width": (self.width_left + self.width_right) / 2,
             "height": self.left_front[1],
         }
+        if getattr(self, "shape", None):
+            d["shape"] = self.shape
+        return d
 
 
 class TensionLine(TensionStrap):
