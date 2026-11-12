@@ -155,6 +155,26 @@ class DiagonalRib(object):
         hi = float(np.interp(y, [k[0] for k in hi_k], [k[1] for k in hi_k]))
         return max(0.0, lo), min(1.0, hi)
 
+    def u_range_flat(self, cell, samples=401):
+        """function y -> (u_lo, u_hi): the extent of the part across at y such that its edges are straight
+        in the development (as cut; _u_range interpolates in (u, y), which bends them on a twisted part)"""
+        from matplotlib.path import Path as MPath
+        fl, fr = (np.asarray(x.data) for x in self.get_flattened(cell))
+        outline = MPath(np.asarray(self.get_flattened_outline(cell).data))
+        u = np.linspace(0, 1, samples)
+        fl_u = np.array([at_length(fl, x) for x in u])
+        fr_u = np.array([at_length(fr, x) for x in u])
+        left, right = self.get_3d(cell)
+        ll, lr = left.get_length(), right.get_length()
+
+        def rng(y):
+            if y <= 0 or y >= 1:
+                return 0.0, 1.0
+            P = (1 - y) * fl_u + y * fr_u
+            ins = outline.contains_points(P, radius=1e-6) | outline.contains_points(P, radius=-1e-6)
+            return (float(u[ins].min()), float(u[ins].max())) if ins.any() else self._u_range(y, ll, lr)
+        return rng
+
     def get_outline_uv(self, cell, num_seam=None):
         """closed outline in (u, y): u along the seams (0 front .. 1 back), y across (0 rib1 .. 1 rib2)"""
         left, right = self.get_3d(cell)
@@ -227,6 +247,9 @@ class DiagonalRib(object):
             num_right = len(right)
             len_left, len_right = left.get_length(), right.get_length()
             count = 0
+            u_of = []  # u of every point (points2d may be replaced by a projection below)
+            if getattr(self, "shape", []):
+                u_range_flat = self.u_range_flat(cell)
             y_values = sorted(set(np.linspace(0.0, 1.0, insert_points + 2).tolist()
                                   + [t for t, _, _ in getattr(self, "shape", [])]))
 
@@ -237,8 +260,8 @@ class DiagonalRib(object):
                 line_indices = []
                 num_points = int(num_left * (1.0 - y_pos) + num_right * y_pos)
 
-                u_lo, u_hi = self._u_range(y_pos, len_left, len_right)
                 shaped = bool(getattr(self, "shape", []))
+                u_lo, u_hi = u_range_flat(y_pos) if shaped else self._u_range(y_pos, len_left, len_right)
                 for x_pos in np.linspace(u_lo, u_hi, num_points):
                     if shaped:  # u = fraction of the seam length (as the shape's widths)
                         line_points.append(at_length(left, x_pos) * (1.0 - y_pos) + at_length(right, x_pos) * y_pos)
@@ -248,6 +271,7 @@ class DiagonalRib(object):
                             + right[x_pos * (num_right - 1)] * y_pos
                         )
                     line_points_2d.append([x_pos, y_pos])
+                    u_of.append(x_pos)
                     line_indices.append(count)
                     count += 1
 
@@ -256,7 +280,7 @@ class DiagonalRib(object):
                 number_array.append(line_indices)
 
             # outline
-            edge = number_array[0]
+            edge = list(number_array[0])  # a copy: the rows are used below
             edge += [line[-1] for line in number_array[1:]]
             edge += number_array[-1][
                 -2::-1
@@ -272,6 +296,21 @@ class DiagonalRib(object):
             if project_3d:
                 points2d = _mesh.map_to_2d(point_array)
 
+            if getattr(self, "shape", []):
+                # shaped part: rows of different widths, corners close together -> no Delaunay (it drops
+                # near-collinear boundary points); triangles between consecutive rows by their u parameters
+                u2d = u_of
+                elements = []
+                for r1, r2 in zip(number_array[:-1], number_array[1:]):
+                    i, k = 0, 0
+                    while i < len(r1) - 1 or k < len(r2) - 1:
+                        if k == len(r2) - 1 or (i < len(r1) - 1 and u2d[r1[i + 1]] <= u2d[r2[k + 1]]):
+                            elements.append([r1[i], r2[k], r1[i + 1]])
+                            i += 1
+                        else:
+                            elements.append([r1[i], r2[k], r2[k + 1]])
+                            k += 1
+                return Mesh.from_indexed(point_array, {"diagonals": elements}, boundaries={"diagonals": edge})
             tri = triangulate.Triangulation(points2d, [edge])
             mesh = tri.triangulate(options="Qz")
             # mesh_info = _mesh.mptriangle.MeshInfo()
