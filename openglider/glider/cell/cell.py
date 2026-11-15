@@ -167,14 +167,7 @@ class Cell(CachedObject):
         # self.basic_cell.prof2 = self.prof2
         shape_with_ballooning = self.basic_cell.midrib(minirib.y_value, True).data
         shape_without_ballooning = self.basic_cell.midrib(minirib.y_value, False).data
-        points = []
-        for xval, with_bal, without_bal in zip(
-            self.x_values, shape_with_ballooning, shape_without_ballooning
-        ):
-            fakt = minirib.function(xval)  # factor ballooned/unb. (0-1)
-            point = without_bal + fakt * (with_bal - without_bal)
-            points.append(point)
-        return Profile3D(points)
+        return Profile3D(list(minirib.section(self.x_values, shape_with_ballooning, shape_without_ballooning)))
 
     @cached_property("rib_profiles_3d")
     def _child_cells(self):
@@ -202,7 +195,12 @@ class Cell(CachedObject):
 
             for c in cells:
                 if bl > 0:
-                    newval = l / lnew * (bl + 1 / 2) - 1 / 2
+                    # the child cells together keep the panel length of the cell at this station:
+                    # sum(l_c * (1 + b_c)) = l * (1 + bl) with one b_c for all -> b_c = l (1 + bl) / lnew - 1
+                    # (was l / lnew * (bl + 1/2) - 1/2: right only for lnew = l, too long when the minirib
+                    # section stands above the straight line, e.g. +5 mm on 310 mm at 0.65 chord, Tayran-8);
+                    # a section above the cell's arc (lnew > l (1 + bl)): the panel is taut there, b_c = 0
+                    newval = max(l * (1 + bl) / lnew - 1, 0.0)
                     # newval = l/lnew / bl
                     # newval = lnew / l / bl if bl != 0 else 1
                     c.ballooning_phi.append(
