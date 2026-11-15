@@ -13,7 +13,7 @@ from openglider.glider.parametric.arc import ArcCurve
 from openglider.glider.parametric.export_ods import export_ods_2d
 from openglider.glider.parametric.import_ods import import_ods_2d
 from openglider.glider.parametric.lines import LineSet2D, UpperNode2D
-from openglider.glider.rib import RibHole, RigidFoil, Rib, MiniRib
+from openglider.glider.rib import RibHole, PolygonHole, RigidFoil, Rib, MiniRib
 from openglider.glider.parametric.fitglider import fit_glider_3d
 from openglider.utils.distribution import Distribution
 from openglider.utils.table import Table
@@ -395,11 +395,17 @@ class ParametricGlider(object):
 
             chord = abs(front[1] - back[1])
             factor = profile_merge_curve(abs(pos))
+            # elements["profile_factors"]: merge factor per rib, instead of the merge curve (e.g. every rib its own
+            # profile: [0, 1, 2, ...])
+            if "profile_factors" in self.elements:
+                factor = self.elements["profile_factors"][rib_no]
             profile = self.get_merge_profile(factor)
             profile.name = "Profile{}".format(rib_no)
             profile.x_values = profile_x_values
 
+            # "points": a hole of any shape (PolygonHole, outline in chord units of the profile frame)
             this_rib_holes = [
+                PolygonHole(ribhole["points"]) if "points" in ribhole else
                 RibHole(ribhole["pos"], ribhole["size"],
                         ribhole.get("vertical_shift", 0.0), ribhole.get("rotation", 0.0))
                 for ribhole in rib_holes
@@ -427,6 +433,18 @@ class ParametricGlider(object):
                 )
             )
             ribs[-1].aoa_relative = aoa_int(pos)
+            # per-rib corrections on top of the smooth curves (elements["rib_fix"], e.g. a model fitted to a
+            # designer's 3D ribs: rib roll off the arc tangent, zigzag of loaded / unloaded ribs):
+            # {"rib": rib_no, "pos": [dx, dy, dz], "chord": d, "arcang": d, "aoa": d (relative), "zrot": d}
+            for fix in self.elements.get("rib_fix", []):
+                if fix["rib"] == rib_no:
+                    r_ = ribs[-1]
+                    aoa_rel = r_.aoa_relative + fix.get("aoa", 0.0)
+                    r_.pos = np.asarray(r_.pos) + np.asarray(fix.get("pos", [0.0, 0.0, 0.0]))
+                    r_.chord = r_.chord + fix.get("chord", 0.0)
+                    r_.arcang = r_.arcang + fix.get("arcang", 0.0)
+                    r_.zrot = r_.zrot + fix.get("zrot", 0.0)
+                    r_.aoa_relative = aoa_rel
 
         if self.shape.has_center_cell:
             new_rib = ribs[0].copy()
@@ -439,6 +457,9 @@ class ParametricGlider(object):
         glider.cells = []
         for cell_no, (rib1, rib2) in enumerate(zip(ribs[:-1], ribs[1:])):
             ballooning_factor = ballooning_merge_curve(cell_centers[cell_no])
+            # elements["ballooning_factors"]: merge factor per cell (center cell first), instead of the merge curve
+            if "ballooning_factors" in self.elements:
+                ballooning_factor = self.elements["ballooning_factors"][cell_no]
             ballooning = self.merge_ballooning(ballooning_factor)
 
             cell = Cell(rib1, rib2, ballooning, name="c{}".format(cell_no + 1))
@@ -486,6 +507,9 @@ class ParametricGlider(object):
         )
         for cell_no, cell in enumerate(glider3d.cells):
             ballooning_factor = ballooning_merge_curve(cell_centers[cell_no])
+            # elements["ballooning_factors"]: merge factor per cell (center cell first), instead of the merge curve
+            if "ballooning_factors" in self.elements:
+                ballooning_factor = self.elements["ballooning_factors"][cell_no]
             ballooning = self.merge_ballooning(ballooning_factor)
             cell.ballooning = ballooning
 

@@ -308,5 +308,58 @@ class RibSquareHole:
         return {}
 
 
+class PolygonHole(object):
+    """A rib hole of any shape: closed outline in chord units of the rib's profile frame (x back from the
+    nose, y up), e.g. a designer's hole contour (trapezoid, drop, rounded rectangle). The same interface as
+    RibHole: get_points returns the outline resampled to num equal steps along it, closed (last = first)."""
+
+    def __init__(self, points, name=None):
+        P = np.asarray(points, dtype=float)
+        if len(P) > 1 and np.allclose(P[0], P[-1]):
+            P = P[:-1]
+        self.points = P
+        self.name = name
+
+    def get_points(self, rib, num=80):
+        P = np.vstack([self.points, self.points[:1]])
+        s = np.r_[0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
+        t = np.linspace(0, s[-1], num + 1)
+        Q = np.c_[np.interp(t, s, P[:, 0]), np.interp(t, s, P[:, 1])]
+        return PolyLine2D(Q, name=f"{rib.name}-hole")
+
+    def get_3d(self, rib, num=20):
+        hole = self.get_points(rib, num=num)
+        return rib.align_all(set_dimension(hole, 3))
+
+    def get_flattened(self, rib, num=80, scale=True):
+        """closed outline for drawings and the rib mesh: points on straight stretches dropped (the rib
+        triangulation removes collinear points and then fails on the boundary that refers to them)"""
+        P = np.asarray(self.get_points(rib, num).data)[:-1]
+        keep = []
+        n = len(P)
+        for i in range(n):
+            a, b, c = P[i - 1], P[i], P[(i + 1) % n]
+            u, v = b - a, c - b
+            if np.linalg.norm(u) < 1e-12 or np.linalg.norm(v) < 1e-12:
+                continue
+            if abs(u[0] * v[1] - u[1] * v[0]) > 1e-6 * np.linalg.norm(u) * np.linalg.norm(v):
+                keep.append(b)
+        points = np.array(keep + keep[:1])
+        if scale:
+            points = points * rib.chord
+        return PolyLine2D(points)
+
+    def get_center(self, rib, scale=True):
+        """area centroid of the outline"""
+        x, y = self.points[:, 0], self.points[:, 1]
+        cr = x * np.roll(y, -1) - np.roll(x, -1) * y
+        A = cr.sum() / 2
+        c = np.array([((x + np.roll(x, -1)) * cr).sum(), ((y + np.roll(y, -1)) * cr).sum()]) / (6 * A)
+        return c * rib.chord if scale else c
+
+    def __json__(self):
+        return {"points": self.points.tolist(), "name": self.name}
+
+
 class Mylar(object):
     pass
