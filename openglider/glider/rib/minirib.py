@@ -74,6 +74,24 @@ class MiniRib:
 
         return Profile3D(points)
 
+    def get_mesh(self, cell):
+        """the part as a strip of quads between its upper and lower edge (section of the cell at yvalue,
+        stations from front_cut to back_cut, upper and lower station paired by chord fraction)"""
+        import numpy as np
+        from openglider.mesh import Mesh
+
+        pts = np.asarray(self.get_3d(cell).data)
+        xs = np.asarray(cell.x_values)
+        up = sorted([(abs(x), i) for i, x in enumerate(xs) if x < 0 and self.front_cut <= abs(x) <= self.back_cut])
+        lo = [(abs(x), i) for i, x in enumerate(xs) if x >= 0 and self.front_cut <= abs(x) <= self.back_cut]
+        if len(up) < 2 or not lo:
+            return Mesh.from_indexed([], {}, {})
+        lx = np.array([x for x, _ in lo])
+        pairs = [(i, lo[int(np.argmin(np.abs(lx - x)))][1]) for x, i in up]
+        vertices = [pts[k] for pair in pairs for k in pair]
+        quads = [[2 * k, 2 * k + 2, 2 * k + 3, 2 * k + 1] for k in range(len(pairs) - 1)]
+        return Mesh.from_indexed(vertices, {"miniribs": quads}, name=self.name)
+
     def get_flattened(self, cell):
         prof_3d = self.get_3d(cell)
         prof_flat = prof_3d.flatten()

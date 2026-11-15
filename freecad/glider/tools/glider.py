@@ -650,6 +650,9 @@ def draw_glider(
                 msh += diagonal.get_mesh(cell, insert_points=4)
                 # msh += mesh.Mesh.from_diagonal(diagonal, cell, insert_points=4)
 
+            for minirib in cell.miniribs:
+                msh += minirib.get_mesh(cell)
+
             for strap in cell.straps:
                 if isinstance(strap, TensionLine):
                     line_msh += strap.get_mesh(cell)
